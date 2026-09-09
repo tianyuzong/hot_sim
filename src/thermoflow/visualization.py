@@ -1,0 +1,348 @@
+"""Engineering display surfaces derived from verified geometry and solver VTK files."""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Literal
+
+import numpy as np
+from pydantic import Field, model_validator
+
+from .models import Quantity, StrictModel
+from .stl_geometry import (
+    _component_face_groups,
+    _component_record,
+    _is_component_usable,
+    load_stl_mesh,
+)
+from .storage import FileRepository, RecordNotFoundError
+from .vtk_io import read_solver_vtk
+
+HEX_FACES = np.array([[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4],
+                      [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]])
+
+
+class ViewRequest(StrictModel):
+    kind: Literal["mesh", "result"] = "result"
+    frame_index: int | None = Field(default=None, ge=0)
+    section_axis: Literal["x", "y", "z"] | None = None
+    section_position: Quantity | None = None
+    difference_study_id: str | None = Field(default=None, pattern=r"^study-[a-z0-9-]+$")
+
+    @model_validator(mode="after")
+    def validate_selection(self):
+        if (self.section_axis is None) != (self.section_position is None):
+            raise ValueError("截面需要同时指定方向与位置")
+        if self.section_position and self.section_position.unit not in {"mm", "um", "m"}:
+            raise ValueError("截面位置必须使用长度单位")
+        if self.kind == "mesh" and (self.frame_index is not None or self.difference_study_id):
+            raise ValueError("网格预览不能选择结果时刻或研究差值")
+        return self
+
+
+class EngineeringSurface(StrictModel):
+    coordinate_unit: Literal["mm", "source"] = "mm"
+    vertices: list[tuple[float, float, float]]
+    triangles: list[tuple[int, int, int]]
+    component_ids: list[str | None]
+    cell_ids: list[int] = Field(default_factory=list)
+    temperature_k: list[float] | None = None
+    heat_flux_w_m2: list[tuple[float, float, float]] | None = None
+    source_sha256: str
+    time_s: float | None = None
+    total_cells: int = 0
+    sampled: Literal[False] = False
+    minimum_position_mm: tuple[float, float, float] | None = None
+    maximum_position_mm: tuple[float, float, float] | None = None
+    temperature_min_k: float | None = None
+    temperature_max_k: float | None = None
+    heat_flux_min_w_m2: float | None = None
+    heat_flux_max_w_m2: float | None = None
+
+
+class EngineeringPlaybackFrame(StrictModel):
+    index: int = Field(ge=0)
+    time_s: float = Field(ge=0)
+    temperature_k: list[float]
+    source_sha256: str
+    minimum_position_mm: tuple[float, float, float] | None = None
+    maximum_position_mm: tuple[float, float, float] | None = None
+    temperature_min_k: float
+    temperature_max_k: float
+
+
+class EngineeringPlayback(StrictModel):
+    study_id: str
+    coordinate_unit: Literal["mm"] = "mm"
+    vertices: list[tuple[float, float, float]]
+    triangles: list[tuple[int, int, int]]
+    component_ids: list[str | None]
+    cell_ids: list[int]
+    total_cells: int
+    frames: list[EngineeringPlaybackFrame] = Field(min_length=1, max_length=201)
+
+
+class CellProbe(StrictModel):
+    study_id: str
+    cell_id: int
+    source_sha256: str
+    frame_index: int | None
+    time_s: float | None
+    component_id: str | None
+    position_mm: tuple[float, float, float]
+    temperature: Quantity
+    heat_flux_w_m2: tuple[float, float, float] | None
+    location: Literal["cell_center"] = "cell_center"
+
+
+def geometry_surface(repository: FileRepository, workpiece_id: str) -> EngineeringSurface:
+    workpiece = repository.get_workpiece(workpiece_id)
+    if workpiece.kind.value == "box":
+        import trimesh
+        dimensions = np.asarray(workpiece.dimensions_mm.as_tuple())
+        mesh = trimesh.creation.box(extents=dimensions)
+        mesh.apply_translation(dimensions / 2)
+        return EngineeringSurface(vertices=mesh.vertices.tolist(), triangles=mesh.faces.tolist(),
+                                  component_ids=[None] * len(mesh.faces), source_sha256=workpiece.content_sha256)
+    if workpiece.cad_format.value != "stl":
+        raise ValueError("当前三维几何读取仅支持 STL")
+    # IDs derive from the original STL, before unit normalization.
+    path = repository.workpiece_dir(workpiece_id) / "source.stl"
+    if hashlib.sha256(path.read_bytes()).hexdigest() != workpiece.content_sha256:
+        raise ValueError("几何文件校验失败，请重新导入几何")
+    mesh = load_stl_mesh(path)
+    components = [None] * len(mesh.faces)
+    for group, face_indices in _component_face_groups(mesh):
+        if _is_component_usable(group):
+            component_id = _component_record(group, 0).component_id
+            for index in face_indices:
+                components[int(index)] = component_id
+    scale = workpiece.length_unit.scale_to_mm if workpiece.unit_confirmed else 1
+    return EngineeringSurface(
+        vertices=(mesh.vertices * scale).tolist(), triangles=mesh.faces.tolist(),
+        component_ids=components, source_sha256=workpiece.content_sha256,
+        coordinate_unit="mm" if workpiece.unit_confirmed else "source",
+    )
+
+
+def _read_volume(repository, study_id, request):
+    study = repository.get_study(study_id)
+    time = None
+    if request.kind == "mesh":
+        if study.mesh_status.value not in {"ready", "needs_review", "blocked"}:
+            raise RecordNotFoundError("该研究没有已完成的网格")
+        record = repository.get_mesh(study_id)
+        name = "mesh.vtk"
+    else:
+        if study.status.value != "succeeded":
+            raise RecordNotFoundError("该研究没有已完成的结果")
+        record = repository.get_result(study_id)
+        name, time = "temperature.vtk", record.time_s
+        if request.frame_index is not None:
+            step = next((s for s in record.time_steps if s.index == request.frame_index), None)
+            if step is None:
+                raise RecordNotFoundError("该研究不存在指定时间步")
+            name, time = step.vtk_artifact, step.time_s
+    artifact = next((item for item in record.artifacts if item.name == name), None)
+    if artifact is None:
+        raise RecordNotFoundError("该研究缺少对应数值网格文件")
+    path = repository.artifact_path(study_id, name)
+    if hashlib.sha256(path.read_bytes()).hexdigest() != artifact.sha256:
+        raise ValueError("数值网格文件校验失败，请重新生成研究")
+    try:
+        mesh = read_solver_vtk(path)
+    except Exception as exc:
+        raise ValueError("数值网格文件无法读取，请重新生成研究") from exc
+    if not mesh.cells or any(block.type != "hexahedron" for block in mesh.cells):
+        raise ValueError("当前三维结果接口只支持六面体和体素结果网格")
+    cells = np.concatenate([block.data for block in mesh.cells])
+    points = np.asarray(mesh.points, dtype=float)
+    cell_fields = {key: np.concatenate(value) for key, value in mesh.cell_data.items()}
+    nodal = mesh.point_data.get("temperature_k")
+    temperature = cell_fields.get("temperature_k")
+    if temperature is not None:
+        temperature = temperature.reshape(-1)
+    elif nodal is not None:
+        nodal = nodal.reshape(-1)
+        temperature = nodal[cells].mean(axis=1)
+    if request.kind == "result" and temperature is None:
+        raise ValueError("结果网格缺少真实温度场")
+    flux = cell_fields.get("heat_flux_w_m2")
+    if not len(cells) or any(not np.isfinite(a).all() for a in (points, temperature, flux) if a is not None):
+        raise ValueError("结果网格为空或包含无效数值")
+    return study, points, cells, temperature, nodal, flux, artifact.sha256, time
+
+
+def _cell_to_nodal(cells, values, point_count):
+    """Reconstruct a continuous display field by averaging adjacent real cells."""
+    sums = np.zeros(point_count, dtype=float)
+    counts = np.zeros(point_count, dtype=np.int64)
+    np.add.at(sums, cells.reshape(-1), np.repeat(values, cells.shape[1]))
+    np.add.at(counts, cells.reshape(-1), 1)
+    return np.divide(sums, counts, out=np.zeros_like(sums), where=counts > 0)
+
+
+def _cell_components(repository, study, cells, points):
+    workpiece = repository.get_workpiece(study.workpiece_id)
+    ids = [component.component_id for component in workpiece.components]
+    if len(ids) <= 1:
+        return np.full(len(cells), ids[0] if ids else None, dtype=object)
+    from scipy.ndimage import label
+
+    from .regions import ComponentMappingError, RegionFaceMap, component_cell_masks
+
+    # Reconstruct the regular voxel grid from the verified VTK. Component order
+    # can change on quantization, so share the solver's original-surface ownership.
+    centers = points[cells].mean(axis=1)
+    pitch = np.ptp(points[cells[0]], axis=0)
+    origin = centers.min(axis=0)
+    coordinates = np.rint((centers - origin) / pitch).astype(int)
+    active = np.zeros(tuple(coordinates.max(axis=0) + 1), dtype=bool)
+    indices = tuple(coordinates.T)
+    active[indices] = True
+    if label(active)[1] != len(ids):
+        # A blocked mesh remains inspectable, but must not invent component IDs.
+        return np.full(len(cells), None, dtype=object)
+    transform = np.eye(4)
+    transform[:3, :3] = np.diag(pitch)
+    transform[:3, 3] = origin
+    face_map = RegionFaceMap(active, transform, workpiece,
+                             repository.workpiece_dir(workpiece.workpiece_id) / "source.stl")
+    mapping = np.full(len(cells), None, dtype=object)
+    try:
+        component_cells = component_cell_masks(active, workpiece, face_map)
+    except ComponentMappingError:
+        if study.mesh_status.value != "blocked":
+            raise
+        # Keep a rejected mesh diagnosable without guessing ownership. Hash or
+        # parsing failures are not ComponentMappingError and must still propagate.
+        return mapping
+    for component_id, mask in component_cells.items():
+        mapping[mask[indices]] = component_id
+    return mapping
+
+
+def study_surface(repository: FileRepository, study_id: str, request: ViewRequest) -> EngineeringSurface:
+    with repository.study_lock(study_id):
+        study, points, cells, temperature, nodal, flux, fingerprint, time = _read_volume(repository, study_id, request)
+        if request.difference_study_id:
+            other_request = request.model_copy(update={"difference_study_id": None})
+            other, other_points, other_cells, other_t, other_nodal, _, other_hash, other_time = _read_volume(
+                repository, request.difference_study_id, other_request,
+            )
+            if (other.project_id != study.project_id or other.workpiece_id != study.workpiece_id
+                    or time != other_time or not np.array_equal(points, other_points)
+                    or not np.array_equal(cells, other_cells) or (nodal is None) != (other_nodal is None)):
+                raise ValueError("只有同一项目、几何、完整网格和时刻的结果可以显示空间差值")
+            temperature = other_t - temperature
+            nodal = other_nodal - nodal if nodal is not None else None
+            flux = None
+            fingerprint = hashlib.sha256((fingerprint + other_hash).encode()).hexdigest()
+        components = _cell_components(repository, study, cells, points)
+        result_nodal = nodal
+        if nodal is None and temperature is not None:
+            nodal = _cell_to_nodal(cells, temperature, len(points))
+        if request.section_axis:
+            vertices, owners, nodal_values = _section(points, cells, nodal, request)
+        else:
+            faces = cells[:, HEX_FACES].reshape(-1, 4)
+            _, inverse, counts = np.unique(np.sort(faces, axis=1), axis=0, return_inverse=True, return_counts=True)
+            exterior = counts[inverse] == 1
+            owners = np.repeat(np.arange(len(cells)), 6)[exterior]
+            face_nodes = faces[exterior]
+            vertices = points[face_nodes]
+            nodal_values = nodal[face_nodes] if nodal is not None else None
+        triangles = (np.arange(len(owners))[:, None, None] * 4 + np.array([[0, 1, 2], [0, 2, 3]])).reshape(-1, 3)
+        vertex_temperature = nodal_values if nodal_values is not None else (
+            np.repeat(temperature[owners], 4) if temperature is not None else None
+        )
+        positions = points if result_nodal is not None else points[cells].mean(axis=1)
+        values = result_nodal if result_nodal is not None else temperature
+        return EngineeringSurface(
+            vertices=vertices.reshape(-1, 3).tolist(), triangles=triangles.tolist(),
+            component_ids=np.repeat(components[owners], 2).tolist(), cell_ids=np.repeat(owners, 2).tolist(),
+            temperature_k=vertex_temperature.reshape(-1).tolist() if vertex_temperature is not None else None,
+            heat_flux_w_m2=np.repeat(flux[owners], 4, axis=0).tolist() if flux is not None else None,
+            source_sha256=fingerprint, time_s=time, total_cells=len(cells),
+            minimum_position_mm=tuple(positions[int(values.argmin())]) if values is not None else None,
+            maximum_position_mm=tuple(positions[int(values.argmax())]) if values is not None else None,
+            temperature_min_k=float(values.min()) if values is not None else None,
+            temperature_max_k=float(values.max()) if values is not None else None,
+            heat_flux_min_w_m2=float(np.linalg.norm(flux, axis=1).min()) if flux is not None else None,
+            heat_flux_max_w_m2=float(np.linalg.norm(flux, axis=1).max()) if flux is not None else None,
+        )
+
+
+def study_playback(repository: FileRepository, study_id: str) -> EngineeringPlayback:
+    result = repository.get_result(study_id)
+    if not result.time_steps:
+        raise RecordNotFoundError("该研究没有瞬态播放帧")
+    surfaces = [
+        study_surface(repository, study_id, ViewRequest(frame_index=step.index))
+        for step in result.time_steps
+    ]
+    geometry = surfaces[0]
+    for surface in surfaces[1:]:
+        if (surface.vertices != geometry.vertices or surface.triangles != geometry.triangles
+                or surface.component_ids != geometry.component_ids
+                or surface.cell_ids != geometry.cell_ids):
+            raise ValueError("瞬态播放帧的计算网格不一致，请重新计算研究")
+    return EngineeringPlayback(
+        study_id=study_id,
+        vertices=geometry.vertices,
+        triangles=geometry.triangles,
+        component_ids=geometry.component_ids,
+        cell_ids=geometry.cell_ids,
+        total_cells=geometry.total_cells,
+        frames=[EngineeringPlaybackFrame(
+            index=step.index,
+            time_s=surface.time_s if surface.time_s is not None else step.time_s,
+            temperature_k=surface.temperature_k or [],
+            source_sha256=surface.source_sha256,
+            minimum_position_mm=surface.minimum_position_mm,
+            maximum_position_mm=surface.maximum_position_mm,
+            temperature_min_k=surface.temperature_min_k if surface.temperature_min_k is not None
+            else step.temperature_min_k,
+            temperature_max_k=surface.temperature_max_k if surface.temperature_max_k is not None
+            else step.temperature_max_k,
+        ) for step, surface in zip(result.time_steps, surfaces, strict=True)],
+    )
+
+
+def _section(points, cells, nodal, request):
+    axis = "xyz".index(request.section_axis)
+    position = request.section_position.value * {"mm": 1, "um": 0.001, "m": 1000}[request.section_position.unit]
+    corners = points[cells]
+    low, high = corners.min(axis=1), corners.max(axis=1)
+    owners = np.flatnonzero((low[:, axis] <= position) & ((position < high[:, axis]) | (
+        (position == high[:, axis]) & (position == high[:, axis].max())
+    )))
+    tangent = [i for i in range(3) if i != axis]
+    vertices = np.repeat(low[owners, None, :], 4, axis=1)
+    vertices[:, :, axis] = position
+    vertices[:, [1, 2], tangent[0]] = high[owners, tangent[0]][:, None]
+    vertices[:, [2, 3], tangent[1]] = high[owners, tangent[1]][:, None]
+    values = None
+    if nodal is not None:
+        # Trilinear interpolation of actual nodal values on the axis-aligned solver hexes.
+        local = (vertices[:, :, None, :] - low[owners, None, None, :]) / (high - low)[owners, None, None, :]
+        upper = np.isclose(corners[owners], high[owners, None, :])
+        weights = np.where(upper[:, None], local, 1 - local).prod(axis=-1)
+        values = (weights * nodal[cells[owners]][:, None, :]).sum(axis=-1)
+    return vertices, owners, values
+
+
+def probe_cell(repository: FileRepository, study_id: str, cell_id: int, frame_index: int | None) -> CellProbe:
+    with repository.study_lock(study_id):
+        study, points, cells, temperature, _, flux, fingerprint, time = _read_volume(
+            repository, study_id, ViewRequest(frame_index=frame_index),
+        )
+        if not 0 <= cell_id < len(cells):
+            raise RecordNotFoundError("该研究不存在指定数值单元")
+        component = _cell_components(repository, study, cells, points)[cell_id]
+        return CellProbe(
+            study_id=study_id, cell_id=cell_id, frame_index=frame_index, source_sha256=fingerprint,
+            time_s=time, component_id=component, position_mm=tuple(points[cells[cell_id]].mean(axis=0)),
+            temperature=Quantity(value=float(temperature[cell_id]), unit="K"),
+            heat_flux_w_m2=tuple(flux[cell_id]) if flux is not None else None,
+        )

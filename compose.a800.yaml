@@ -1,0 +1,31 @@
+services:
+  thermoflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.a800
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      THERMOFLOW_COMPUTE: cuda
+      THERMOFLOW_DATA_DIR: /var/lib/thermoflow
+    ports:
+      - "${THERMOFLOW_BIND_ADDRESS:-127.0.0.1}:${THERMOFLOW_PORT:-8000}:8000"
+    volumes:
+      - ./data:/var/lib/thermoflow
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health')); assert d['status']=='ok' and d['compute']['cuda_available']"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s

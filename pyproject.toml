@@ -1,0 +1,57 @@
+[project]
+name = "thermoflow"
+version = "0.1.0"
+description = "GPT-planned thermodynamic simulation orchestration on CadFlow geometry"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "numpy>=2.1,<3",
+  "meshio>=5.3,<5.4",
+  "openai>=1.68,<3",
+  "pydantic>=2.11,<3",
+  "python-dotenv>=1.1,<2",
+  "python-multipart>=0.0.20,<1",
+  "scipy>=1.15,<2",
+  "tomli>=2,<3; python_version < '3.11'",
+  "trimesh>=4.8,<5",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+gpu = [
+  "cupy-cuda12x>=14,<15",
+]
+solver = [
+  "scikit-fem>=12,<13",
+]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<9",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+thermoflow = "thermoflow.__main__:main"
+
+[build-system]
+requires = ["setuptools>=77", "wheel>=0.45"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+thermoflow = ["web/*.html", "web/assets/*", "web/assets/vendor/three/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

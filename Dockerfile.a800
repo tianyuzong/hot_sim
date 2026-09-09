@@ -1,0 +1,25 @@
+FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH=/opt/thermoflow-venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/thermoflow
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN python3 -m venv /opt/thermoflow-venv \
+    && python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir ".[gpu]" \
+    && useradd --create-home --uid 10001 thermoflow \
+    && mkdir -p /var/lib/thermoflow \
+    && chown -R thermoflow:thermoflow /var/lib/thermoflow
+
+USER thermoflow
+EXPOSE 8000
+
+CMD ["uvicorn", "thermoflow.api:app", "--host", "0.0.0.0", "--port", "8000"]

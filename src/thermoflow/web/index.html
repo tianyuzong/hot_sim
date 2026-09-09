@@ -1,0 +1,947 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#171a1d" />
+    <meta name="description" content="ThermoFlow 热仿真工作台与智能工程仿真平台" />
+    <title>ThermoFlow 智能工程仿真平台</title>
+    <link rel="stylesheet" href="/assets/styles.css?v=20260909-3" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand" aria-label="ThermoFlow 智能工程仿真平台">
+          <span class="brand-mark" aria-hidden="true">TF</span>
+          <div>
+            <strong>ThermoFlow</strong>
+            <span>智能工程仿真平台</span>
+          </div>
+        </div>
+
+        <div class="system-state" aria-live="polite">
+          <span class="status-dot" id="serviceDot"></span>
+          <span id="serviceLabel">正在连接</span>
+          <span id="plannerLabel" hidden></span>
+          <span id="cadflowLabel" hidden></span>
+        </div>
+
+        <nav class="top-actions" aria-label="工具">
+          <button class="icon-button" id="refreshButton" type="button" title="刷新数据" aria-label="刷新数据">
+            <span aria-hidden="true">↻</span>
+          </button>
+          <button class="docs-link" id="diagnosticsButton" type="button">高级诊断</button>
+        </nav>
+      </header>
+
+      <nav class="task-nav" aria-label="仿真任务">
+        <button id="geometryNav" type="button" class="is-active">几何</button>
+        <button id="materialsNav" type="button">材料</button>
+        <button id="scenarioNav" type="button">工况</button>
+        <button id="meshNav" type="button">网格</button>
+        <button id="solveNav" type="button">求解</button>
+        <button id="resultNav" type="button">结果</button>
+        <button id="evaluationNav" type="button">评估</button>
+        <button id="agentNav" type="button">Agent 优化</button>
+      </nav>
+
+      <main class="main-grid">
+        <aside class="workpiece-panel" aria-labelledby="workpieceHeading">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">项目模型</span>
+              <h1 id="workpieceHeading">项目与组件</h1>
+            </div>
+            <button class="icon-button icon-button-strong" id="newWorkpieceButton" type="button" title="导入 STL" aria-label="导入 STL">
+              <span aria-hidden="true">⇧</span>
+            </button>
+          </div>
+          <label class="search-field">
+            <span class="sr-only">搜索项目或工件</span>
+            <input id="workpieceSearch" type="search" placeholder="搜索项目或工件" autocomplete="off" />
+          </label>
+          <div class="workpiece-list" id="workpieceList" aria-live="polite"></div>
+          <section class="component-tree" id="componentTree" hidden>
+            <header><span>组件</span><small id="componentCount">0</small></header>
+            <div id="componentList"></div>
+          </section>
+          <div class="source-editor-slot" id="sourceEditorSlot" hidden></div>
+          <div class="panel-footer">
+            <span id="workpieceCount">0 个项目</span>
+            <span id="studyCount">0 项研究</span>
+          </div>
+        </aside>
+
+        <section class="workspace" aria-labelledby="workspaceTitle">
+          <header class="workspace-heading">
+            <div>
+              <span class="eyebrow" id="workspaceKind">工程工作区</span>
+              <h2 id="workspaceTitle">尚未选择工件</h2>
+            </div>
+            <span class="state-badge state-neutral" id="workspaceState">待选择</span>
+          </header>
+
+          <section class="geometry-stage" aria-label="工件工程视图">
+            <canvas id="workpieceCanvas" tabindex="0" aria-label="STL 工件工程视图，可旋转模型、选择组件与边界区域、拖动热源或点选温度探针"></canvas>
+            <div class="viewport-overlay">
+            <div class="viewport-tools">
+              <select id="standardView" aria-label="标准视角" title="标准视角">
+                <option value="iso">等轴测</option><option value="front">前视</option>
+                <option value="right">右视</option><option value="top">俯视</option>
+              </select>
+              <label>透明度<input id="geometryOpacity" aria-label="几何不透明度" type="range" min="0.15" max="1" step="0.05" value="1"></label>
+              <button id="focusMaximum" type="button" title="定位最高温度" aria-label="定位最高温度">T↑</button>
+              <select id="geometrySelectionMode" aria-label="选择对象" title="选择对象">
+                <option value="component">组件</option><option value="faces">三角面</option>
+              </select>
+              <span id="surfaceSelectionTools" class="surface-selection-tools" hidden>
+                <output id="surfaceSelectionCount" aria-live="polite">0 个面</output>
+                <button id="saveSurfaceSelection" type="button" title="保存所选面为区域" disabled>保存区域</button>
+                <button id="clearSurfaceSelection" type="button" title="清空选面" aria-label="清空选面" disabled>×</button>
+              </span>
+            </div>
+            <output id="viewportStatus" class="viewport-status" role="status" hidden></output>
+            <div class="visualization-modes" id="visualizationModes" role="group" aria-label="可视化模式" hidden>
+              <button id="modelViewButton" type="button" aria-pressed="false">模型</button>
+              <button id="meshViewButton" type="button" aria-pressed="false" hidden>网格</button>
+              <button id="diffusionViewButton" type="button" aria-pressed="false" hidden>热扩散</button>
+              <button id="thermalViewButton" type="button" aria-pressed="true">绝对温度</button>
+              <button id="heatFluxViewButton" type="button" aria-pressed="false">热流</button>
+              <button id="contourViewButton" type="button" aria-pressed="false">等值带</button>
+              <button id="sliceViewButton" type="button" aria-pressed="false">剖面</button>
+            </div>
+            <div class="slice-controls" id="sliceControls" hidden>
+              <label>
+                <span>剖切轴</span>
+                <select id="sliceAxis" aria-label="剖切轴">
+                  <option value="x">X</option>
+                  <option value="y">Y</option>
+                  <option value="z">Z</option>
+                </select>
+              </label>
+              <input id="slicePosition" type="range" min="0" max="100" step="1" value="50" aria-label="剖切位置" />
+              <output id="slicePositionLabel" for="slicePosition">X = 50%</output>
+            </div>
+            </div>
+            <div class="empty-stage" id="emptyStage">
+              <strong>暂无工件</strong>
+              <span>导入 STL 后确认尺度并建立仿真方案</span>
+            </div>
+            <div class="thermal-legend" id="thermalLegend" hidden>
+              <strong id="thermalLegendTitle">温度 · K</strong>
+              <div class="thermal-gradient" aria-hidden="true"></div>
+              <div class="thermal-labels">
+                <b id="coldTemperature">低温</b>
+                <b id="midTemperature">中温</b>
+                <b id="hotTemperature">高温</b>
+              </div>
+              <small id="diffusionReference" hidden></small>
+            </div>
+            <output class="temperature-probe" id="probeReadout" aria-live="polite" hidden></output>
+            <button class="source-edit-toggle" id="sourceEditButton" type="button" title="编辑热源" aria-label="编辑热源" hidden>
+              <span aria-hidden="true"></span>
+            </button>
+            <button class="view-reset" id="resetViewButton" type="button" title="重置视角" aria-label="重置视角" hidden>↺</button>
+            <form class="source-editor" id="sourceEditor" hidden>
+              <header>
+                <div>
+                  <span>热源参数</span>
+                  <output id="sourcePositionReadout">—</output>
+                </div>
+                <button id="closeSourceEditorButton" type="button" title="关闭热源参数" aria-label="关闭热源参数">×</button>
+              </header>
+              <div class="source-collection-toolbar">
+                <div id="sourceList" class="source-list" role="listbox" aria-label="热源列表"></div>
+                <button id="addHeatSource" type="button">＋ 新增热源</button>
+                <button id="deleteHeatSource" type="button">删除当前热源</button>
+              </div>
+              <div class="source-editor-grid">
+                <label class="source-editor-wide">
+                  <span>名称</span>
+                  <input id="canvasSourceName" type="text" maxlength="80" required />
+                </label>
+                <label class="source-editor-wide">
+                  <span>类型</span>
+                  <select id="canvasSourceShape">
+                    <option value="point">点热源</option>
+                    <option value="line">线热源</option>
+                    <option value="surface">面热源</option>
+                    <option value="volume">体热源</option>
+                  </select>
+                </label>
+                <label class="source-editor-wide">
+                  <span>放置方式</span>
+                  <select id="canvasSourcePlacement">
+                    <option value="surface">贴附表面</option>
+                    <option value="embedded">嵌入工件</option>
+                  </select>
+                </label>
+                <label id="canvasSourceDepthField" class="source-editor-wide">
+                  <span>嵌入深度 <i>mm</i></span>
+                  <input id="canvasSourceDepth" type="number" min="0" max="1000000" step="any" required />
+                </label>
+                <label>
+                  <span>功率 <i>W</i></span>
+                  <input id="canvasSourcePower" type="number" min="0.000001" max="10000000" step="any" required />
+                </label>
+                <label id="canvasSourceRadiusField">
+                  <span id="canvasSourceRadiusLabel">半径 <i>mm</i></span>
+                  <input id="canvasSourceRadius" type="number" min="0.000001" max="1000000" step="any" required />
+                </label>
+                <label>
+                  <span>X <i>mm</i></span>
+                  <input id="canvasSourceX" type="number" min="-1000000" max="1000000" step="any" required />
+                </label>
+                <label>
+                  <span>Y <i>mm</i></span>
+                  <input id="canvasSourceY" type="number" min="-1000000" max="1000000" step="any" required />
+                </label>
+                <label>
+                  <span>Z <i>mm</i></span>
+                  <input id="canvasSourceZ" type="number" min="-1000000" max="1000000" step="any" required />
+                </label>
+                <label id="canvasSourceEndXField" hidden>
+                  <span>终点 X <i>mm</i></span>
+                  <input id="canvasSourceEndX" type="number" min="-1000000" max="1000000" step="any" />
+                </label>
+                <label id="canvasSourceEndYField" hidden>
+                  <span>终点 Y <i>mm</i></span>
+                  <input id="canvasSourceEndY" type="number" min="-1000000" max="1000000" step="any" />
+                </label>
+                <label id="canvasSourceEndZField" hidden>
+                  <span>终点 Z <i>mm</i></span>
+                  <input id="canvasSourceEndZ" type="number" min="-1000000" max="1000000" step="any" />
+                </label>
+                <label id="canvasSourceSurfaceAxisField" hidden>
+                  <span>面法向</span>
+                  <select id="canvasSourceSurfaceAxis">
+                    <option value="x">X 轴</option>
+                    <option value="y">Y 轴</option>
+                    <option value="z">Z 轴</option>
+                  </select>
+                </label>
+                <label id="canvasSourceWidthField" hidden>
+                  <span>面宽 <i>mm</i></span>
+                  <input id="canvasSourceWidth" type="number" min="0.000001" max="1000000" step="any" />
+                </label>
+                <label id="canvasSourceHeightField" hidden>
+                  <span>面高 <i>mm</i></span>
+                  <input id="canvasSourceHeight" type="number" min="0.000001" max="1000000" step="any" />
+                </label>
+                <label id="canvasSourceThicknessField" hidden>
+                  <span>映射厚度 <i>mm</i></span>
+                  <input id="canvasSourceThickness" type="number" min="0.000001" max="1000000" step="any" />
+                </label>
+                <label id="canvasSourceVolumeWidthField" hidden>
+                  <span>体尺寸 X <i>mm</i></span>
+                  <input id="canvasSourceVolumeWidth" type="number" min="0.000001" max="1000000" step="any" />
+                </label>
+                <label id="canvasSourceVolumeHeightField" hidden>
+                  <span>体尺寸 Y <i>mm</i></span>
+                  <input id="canvasSourceVolumeHeight" type="number" min="0.000001" max="1000000" step="any" />
+                </label>
+                <label id="canvasSourceVolumeDepthField" hidden>
+                  <span>体尺寸 Z <i>mm</i></span>
+                  <input id="canvasSourceVolumeDepth" type="number" min="0.000001" max="1000000" step="any" />
+                </label>
+                <label>
+                  <span>环境 <i>K</i></span>
+                  <input id="canvasAmbientTemperature" type="number" min="1" max="5000" step="any" required />
+                </label>
+                <label class="source-editor-wide">
+                  <span>对流换热系数 <i>W/(m²·K)</i></span>
+                  <input id="canvasConvectionCoefficient" type="number" min="0.000001" max="1000000" step="any" required />
+                </label>
+                <label id="canvasDurationField">
+                  <span>仿真时长 <i>s</i></span>
+                  <input id="canvasDuration" type="number" min="0.000000001" max="31536000" step="any" required />
+                </label>
+                <label id="canvasTimeStepField">
+                  <span>时间步长 <i>s</i></span>
+                  <input id="canvasTimeStep" type="number" min="0.000000001" max="31536000" step="any" required />
+                </label>
+              </div>
+              <footer>
+                <button class="source-reset-button" id="resetSourceButton" type="button" title="恢复当前方案" aria-label="恢复当前方案">↶</button>
+                <button class="source-apply-button" id="applySourceButton" type="submit">应用到草案</button>
+              </footer>
+            </form>
+          </section>
+
+          <div class="time-controls" id="timeControls" aria-busy="false" hidden>
+            <button id="timePlay" type="button" title="播放时间步" aria-label="播放时间步">▶</button>
+            <input id="timePosition" type="range" min="0" max="1" step="1" value="0" aria-label="结果时间步" />
+            <output id="timeLabel" for="timePosition">0 s</output>
+            <span id="timeLoading" class="time-loading" role="status" hidden>读取真实温度场…</span>
+            <label><input id="timeLockScale" type="checkbox" checked disabled /> 全时段固定色标</label>
+          </div>
+
+          <ol class="workflow" aria-label="仿真流程">
+            <li data-step="geometry">
+              <span aria-hidden="true"></span>
+              <div><b>几何与尺度</b><small id="geometryStep">未就绪</small></div>
+            </li>
+            <li data-step="plan">
+              <span aria-hidden="true"></span>
+              <div><b>仿真输入</b><small id="planStep">未生成</small></div>
+            </li>
+            <li data-step="mesh">
+              <span aria-hidden="true"></span>
+              <div><b>求解网格</b><small id="meshStep">未生成</small></div>
+            </li>
+            <li data-step="solve">
+              <span aria-hidden="true"></span>
+              <div><b>数值研究</b><small id="solveStep">未运行</small></div>
+            </li>
+          </ol>
+
+          <div class="workspace-details">
+            <section class="property-section" aria-labelledby="propertyTitle">
+              <div class="section-heading">
+                <h3 id="propertyTitle">工件属性</h3>
+                <span id="geometryEngine">—</span>
+              </div>
+              <dl class="property-grid" id="propertyGrid">
+                <div><dt>类型</dt><dd>—</dd></div>
+                <div><dt>尺寸</dt><dd>—</dd></div>
+                <div><dt>体积</dt><dd>—</dd></div>
+                <div><dt>表面积</dt><dd>—</dd></div>
+              </dl>
+            </section>
+
+            <section class="history-section" aria-labelledby="historyTitle">
+              <div class="section-heading">
+                <h3 id="historyTitle">研究记录</h3>
+                <span id="selectedStudyId"></span>
+              </div>
+              <div class="study-list" id="studyList"></div>
+            </section>
+          </div>
+        </section>
+
+        <aside class="inspector" aria-label="方案与结果">
+          <div class="inspector-tabs" role="tablist" aria-label="检查器视图" hidden>
+            <button class="tab-button is-active" id="planTab" type="button" role="tab" aria-selected="true">方案</button>
+            <button class="tab-button" id="resultTab" type="button" role="tab" aria-selected="false">结果</button>
+            <button class="tab-button" id="agentTab" type="button" role="tab" aria-selected="false">Agent 优化</button>
+          </div>
+
+          <div class="inspector-content">
+            <section class="computation-status" id="computationStatus" aria-label="计算任务" hidden>
+              <div class="computation-heading"><strong id="computationTitle">计算任务</strong><span id="computationState"></span></div>
+              <p id="computationMessage" role="status"></p>
+              <progress id="computationProgress" max="100" aria-label="计算进度"></progress>
+              <div class="computation-footer"><output id="computationElapsed"></output><button id="cancelComputation" type="button">取消计算</button></div>
+            </section>
+            <section id="planPane" role="tabpanel" aria-labelledby="planTab">
+              <section class="task-panel" id="geometryPanel">
+                <div class="inspector-title">
+                  <div><span class="eyebrow">几何</span><h2>尺度与质量</h2></div>
+                  <span class="confidence" id="geometryQuality">待导入</span>
+                </div>
+                <div class="notice notice-warning" id="unitNotice" hidden>
+                  STL 不包含单位。请选择文件坐标的实际单位，确认后将锁定本工件的尺度。
+                </div>
+                <form class="unit-form" id="unitForm" hidden>
+                  <label><span>文件坐标单位</span>
+                    <select id="lengthUnit">
+                      <option value="um">微米 (um)</option>
+                      <option value="mm" selected>毫米 (mm)</option>
+                      <option value="m">米 (m)</option>
+                    </select>
+                  </label>
+                  <div><span>确认后实际尺寸</span><strong id="unitDimensions">—</strong></div>
+                  <button class="primary-button" type="submit">确认尺度</button>
+                </form>
+                <dl class="inspector-list geometry-checks" id="geometryChecks"></dl>
+                <section class="geometry-regions" id="geometryRegions" hidden>
+                  <div class="section-heading">
+                    <h3>边界区域</h3>
+                    <span id="geometryRegionCount">0 个</span>
+                  </div>
+                  <div class="geometry-region-list" id="geometryRegionList"></div>
+                </section>
+                <div class="notice" id="geometryLimitations" hidden></div>
+              </section>
+
+              <section class="task-panel" id="materialsPanel" hidden>
+                <div class="inspector-title">
+                  <div><span class="eyebrow">组件材料</span><h2>材料与物性</h2></div>
+                  <span class="confidence">逐组件</span>
+                </div>
+                <div class="notice" id="materialsEmpty">尚未生成仿真草案。生成后可在本页为每个组件选择材料，并编辑导热系数、密度和比热容。</div>
+                <div class="materials-empty-actions">
+                  <button class="primary-button" id="materialsCreateDraftButton" type="button">生成可编辑仿真草案</button>
+                  <button class="secondary-button" id="materialsGoScenario" type="button">去工况填写用途</button>
+                </div>
+                <div class="component-materials" id="componentMaterialList"></div>
+                <div class="notice notice-warning" id="materialConfirmationNotice" hidden>
+                  正式求解前必须逐组件核对材料及热物性。规划器给出的材料只是候选值，不代表已经得到用户确认。
+                </div>
+                <label class="confirmation-check" id="materialConfirmationCheck" hidden>
+                  <input id="confirmMaterials" type="checkbox" />
+                  我已逐组件确认当前材料、导热系数、密度和比热容
+                </label>
+                <section class="material-detail" id="materialDetail" hidden>
+                  <div><span>导热系数</span><strong id="materialConductivity">—</strong></div>
+                  <div><span>密度</span><strong id="materialDensitySummary">—</strong></div>
+                  <div><span>比热容</span><strong id="materialHeatCapacity">—</strong></div>
+                  <div><span>发射率</span><strong id="materialEmissivity">—</strong></div>
+                  <p id="materialSource">—</p>
+                </section>
+              </section>
+
+              <section class="task-panel" id="scenarioPanel" hidden>
+                <div class="inspector-title">
+                  <div><span class="eyebrow">自然语言建模</span><h2>用途与工况</h2></div>
+                  <span class="confidence" id="draftState">待描述</span>
+                </div>
+                <form class="scenario-form" id="studyDraftForm">
+                  <label class="wide-field"><span>工件用途、环境和需要验证的问题</span>
+                    <textarea id="studyPurpose" rows="5" maxlength="1000" placeholder="例如：这是一个 6061 铝合金散热件，环境 25 ℃，内部热源 40 W，希望最高温度不超过 80 ℃。" required></textarea>
+                  </label>
+                  <button class="primary-button" id="generateDraftButton" type="submit">生成仿真草案</button>
+                </form>
+                <form class="structured-form" id="structuredInputs" hidden>
+                  <div class="form-grid">
+                    <label class="wide-field"><span>分析类型</span><select id="draftAnalysisType"><option value="steady_state_conduction">稳态导热</option><option value="transient_conduction">瞬态导热</option></select></label>
+                    <label data-transient-field hidden><span>初始温度 <i>K</i></span><input id="draftInitialTemperature" type="number" min="1" max="5000" step="any" /></label>
+                    <label data-transient-field hidden><span>工作持续时间 <i>s</i></span><input id="draftDuration" type="number" min="0.000000001" max="31536000" step="any" /></label>
+                    <label data-transient-field hidden><span>时间步长 <i>s</i></span><input id="draftTimeStep" type="number" min="0.000000001" max="31536000" step="any" /></label>
+                    <label class="wide-field thermal-toggle"><input id="draftEnableHeatSource" type="checkbox" checked /><span>局部功率热源</span></label>
+                    <label data-source-field><span>热源功率 <i>W</i></span><input id="draftSourcePower" type="number" min="0.000001" step="any" required /></label>
+                    <label data-source-field><span>作用半径 <i>mm</i></span><input id="draftSourceRadius" type="number" min="0.000001" step="any" required /></label>
+                    <div class="source-quick-actions" id="sourceQuickActions">
+                      <button class="secondary-button" id="openSourceEditorFromScenario" type="button">打开热源编辑器</button>
+                      <span>可新增多个热源，调整形状、位置、嵌入深度和功率</span>
+                    </div>
+                    <label class="wide-field thermal-toggle"><input id="draftEnableGlobalConvection" type="checkbox" checked /><span>未定温表面的全局对流</span></label>
+                    <label data-convection-field><span>环境温度 <i>K</i></span><input id="draftAmbient" type="number" min="1" step="any" required /></label>
+                    <label data-convection-field><span>对流系数 <i>W/(m²·K)</i></span><input id="draftConvection" type="number" min="0.000001" step="any" required /></label>
+                    <label data-legacy-boundary><span>定温方向</span><select id="draftHeatAxis"><option value="x">X 轴</option><option value="y">Y 轴</option><option value="z">Z 轴</option></select></label>
+                    <label data-legacy-boundary><span>最小侧温度 <i>K</i></span><input id="draftMinTemperature" type="number" min="1" step="any" required /></label>
+                    <label data-legacy-boundary><span>最大侧温度 <i>K</i></span><input id="draftMaxTemperature" type="number" min="1" step="any" required /></label>
+                    <label><span>最高温度判据 <i>K</i></span><input id="draftCriterionMax" type="number" min="1" step="any" placeholder="未设置则无法判定" /></label>
+                  </div>
+                  <div class="fixed-boundary-editor" id="fixedBoundaryEditor" hidden>
+                    <header><h3>定温边界</h3><button id="addFixedBoundary" class="icon-button" type="button" title="添加定温边界" aria-label="添加定温边界">+</button></header>
+                    <div id="fixedBoundaryRows"></div>
+                  </div>
+                  <div class="fixed-boundary-editor" id="surfaceThermalEditor" hidden>
+                    <header><h3>区域热流与换热</h3><button id="addSurfaceCondition" class="icon-button" type="button" title="添加区域热边界" aria-label="添加区域热边界">+</button></header>
+                    <div id="surfaceConditionRows"></div>
+                  </div>
+                  <div class="fixed-boundary-editor" id="thermalContactEditor" hidden>
+                    <header><h3>组件热接触</h3><button id="addThermalContact" class="icon-button" type="button" title="添加组件热接触" aria-label="添加组件热接触">+</button></header>
+                    <p class="editor-hint">仅连接两个分离组件上已保存的相对表面；留空的面积和间隙由网格映射确定。</p>
+                    <div id="thermalContactRows"></div>
+                  </div>
+                </form>
+                <section class="review-list" id="missingInformation" hidden><h3>待确认信息</h3><ul></ul></section>
+                <section class="review-list review-danger" id="unsupportedPhysics" hidden><h3>当前模型范围</h3><ul></ul></section>
+              </section>
+
+              <section class="task-panel" id="meshPanel" hidden>
+                <div class="inspector-title">
+                  <div><span class="eyebrow">离散化</span><h2>网格预览</h2></div>
+                  <span class="confidence" id="meshRisk">待生成</span>
+                </div>
+                <div class="mesh-preview" id="meshPreview">
+                  <div><span>目标单元尺寸</span><input id="draftMeshSize" type="number" min="0.000001" step="any" disabled /><i>mm</i></div>
+                  <div><span>有效单元尺寸</span><strong id="effectiveMeshSize">—</strong><i>mm</i></div>
+                  <div><span id="meshCellCountLabel">预计单元数</span><strong id="estimatedCells">—</strong></div>
+                  <div><span id="meshPointCountLabel">预计网格点</span><strong id="estimatedPoints">—</strong></div>
+                  <div><span>表面单元</span><strong id="surfaceCells">—</strong></div>
+                  <div><span>各轴活动层</span><strong id="occupiedLayers">—</strong></div>
+                  <div><span>组件连通性</span><strong id="meshConnectivity">—</strong></div>
+                  <div><span>体积偏差</span><strong id="meshVolumeDeviation">—</strong></div>
+                  <div><span>质量状态</span><strong id="meshQuality">—</strong></div>
+                </div>
+                <div class="notice" id="meshWarnings">生成草案后可检查网格规模与风险。</div>
+                <dl class="inspector-list" id="boundaryMapping" hidden></dl>
+                <label class="confirmation-check" id="meshReviewCheck" hidden>
+                  <input id="acceptMeshWarnings" type="checkbox" />
+                  我已查看真实网格和质量提示，并接受本次简化网格的建模风险
+                </label>
+                <a class="mesh-artifact" id="meshArtifact" hidden>下载网格 VTK</a>
+              </section>
+
+              <section class="task-panel" id="solvePanel" hidden>
+              <div class="inspector-empty" id="planEmpty">
+                <span class="empty-index">方案</span>
+                <strong>尚无仿真方案</strong>
+              </div>
+              <div id="planContent" hidden>
+                <div class="inspector-title">
+                  <div>
+                    <span class="eyebrow">参数自动补齐</span>
+                    <h2 id="planName">仿真方案</h2>
+                  </div>
+                  <span class="confidence" id="planConfidence">—</span>
+                </div>
+                <dl class="inspector-list">
+                  <div><dt>材料</dt><dd id="planMaterial">—</dd></div>
+                  <div><dt>导热系数</dt><dd id="planConductivity">—</dd></div>
+                  <div><dt>热边界与接触</dt><dd id="planBoundaries">—</dd></div>
+                  <div><dt>热源</dt><dd id="planSource">—</dd></div>
+                  <div><dt>环境散热</dt><dd id="planConvection">—</dd></div>
+                  <div><dt>目标单元</dt><dd id="planMesh">—</dd></div>
+                  <div><dt>收敛容差</dt><dd id="planTolerance">—</dd></div>
+                </dl>
+                <section class="decision-block">
+                  <h3>决策摘要</h3>
+                  <p id="planSummary">—</p>
+                </section>
+                <section class="assumption-block">
+                  <h3>建模假设</h3>
+                  <ul id="planAssumptions"></ul>
+                </section>
+                <label class="confirmation-check" id="confirmationCheck"><input id="confirmInputs" type="checkbox" /> 我已检查材料、工况、边界条件、网格与判据</label>
+              </div>
+              </section>
+            </section>
+
+            <section id="resultPane" role="tabpanel" aria-labelledby="resultTab" hidden>
+              <div class="inspector-empty" id="resultEmpty">
+                <span class="empty-index">结果</span>
+                <strong>尚无求解结果</strong>
+              </div>
+              <div id="resultContent" hidden>
+                <div class="inspector-title">
+                  <div>
+                    <span class="eyebrow" id="resultAnalysisLabel">热分析</span>
+                    <h2>求解结果</h2>
+                  </div>
+                  <span class="state-badge state-success">求解完成</span>
+                </div>
+                <div class="notice notice-warning material-range-warning" id="materialRangeWarning" role="alert" hidden></div>
+                <div class="metric-grid">
+                  <div><span>当前帧最低温度</span><strong id="resultMin">—</strong><small>K</small></div>
+                  <div><span>当前帧最高温度</span><strong id="resultMax">—</strong><small>K</small></div>
+                  <div><span>施加输入功率</span><strong id="resultHeatRate">—</strong><small>W</small></div>
+                  <div><span id="resultResistanceLabel">热阻</span><strong id="resultResistance">—</strong><small>K/W</small></div>
+                </div>
+                <dl class="inspector-list" id="boundaryPowerBalance" hidden></dl>
+                <dl class="inspector-list result-list">
+                  <div><dt>最大热流密度</dt><dd id="resultFlux">—</dd></div>
+                  <div id="resultTimePeakRow" hidden><dt>整个时段最高温度</dt><dd id="resultTimePeak">—</dd></div>
+                  <div><dt>相对环境温升</dt><dd id="resultRise">—</dd></div>
+                  <div><dt>温差跨度</dt><dd id="resultSpan">—</dd></div>
+                  <div><dt>热点位置</dt><dd><button class="result-position" id="resultHotspot" type="button" title="在真实截面定位最高温度">—</button></dd></div>
+                  <div><dt>网格点</dt><dd id="resultPoints">—</dd></div>
+                  <div><dt>网格单元</dt><dd id="resultCells">—</dd></div>
+                  <div><dt>计算后端</dt><dd id="resultCompute">—</dd></div>
+                  <div><dt>能量误差</dt><dd id="resultError">—</dd></div>
+                </dl>
+                <div class="result-actions">
+                  <button class="secondary-button" id="copyStudyButton" type="button">复制研究</button>
+                </div>
+                <section class="comparison-tool" id="comparisonTool">
+                  <div class="section-heading">
+                    <h3>研究比较</h3>
+                    <div class="comparison-heading-actions">
+                      <span id="comparisonAvailability">需要另一项结果</span>
+                      <button class="icon-button" id="exitComparisonButton" type="button" title="退出比较" aria-label="退出比较" hidden>
+                        <span aria-hidden="true">×</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="comparison-picker">
+                    <select id="comparisonCandidate" aria-label="选择对比研究"></select>
+                    <button class="secondary-button" id="compareStudiesButton" type="button">比较研究</button>
+                  </div>
+                  <div id="comparisonContent" hidden>
+                    <div class="comparison-scale" id="comparisonScale">—</div>
+                    <div class="comparison-columns">
+                      <div><span>基准峰值</span><strong id="comparisonBaselineMax">—</strong><small id="comparisonBaselineName">—</small></div>
+                      <div><span>对比峰值</span><strong id="comparisonCandidateMax">—</strong><small id="comparisonCandidateName">—</small></div>
+                    </div>
+                    <dl class="comparison-deltas">
+                      <div><dt>峰值变化</dt><dd id="comparisonMaxDelta">—</dd></div>
+                      <div><dt>热功率变化</dt><dd id="comparisonHeatDelta">—</dd></div>
+                      <div><dt>热阻变化</dt><dd id="comparisonResistanceDelta">—</dd></div>
+                    </dl>
+                    <div class="segmented-control comparison-modes" role="group" aria-label="比较场显示模式">
+                      <button class="segment is-active" id="comparisonBaselineMode" type="button" aria-pressed="true">基准场</button>
+                      <button class="segment" id="comparisonCandidateMode" type="button" aria-pressed="false">对比场</button>
+                      <button class="segment" id="comparisonDifferenceMode" type="button" aria-pressed="false">差值场</button>
+                    </div>
+                    <div class="notice" id="comparisonNotice"></div>
+                  </div>
+                </section>
+                <div class="artifact-list" id="artifactList"></div>
+              </div>
+            </section>
+
+            <section id="evaluationPane" class="task-panel" hidden>
+              <div class="inspector-title">
+                <div><span class="eyebrow">工程评估</span><h2 id="evaluationTitle">无法判定</h2></div>
+                <span class="state-badge state-neutral" id="evaluationBadge">待结果</span>
+              </div>
+              <div class="evaluation-callout" id="evaluationCallout">完成求解后将按用户设置的判据评估结果。</div>
+              <ul class="evaluation-list" id="evaluationList"></ul>
+              <section class="assumption-block"><h3>假设与适用范围</h3><ul id="evaluationAssumptions"></ul></section>
+            </section>
+
+            <section id="agentPane" role="tabpanel" aria-labelledby="agentTab" hidden>
+              <div class="inspector-empty" id="agentEmpty">
+                <span class="empty-index">A</span>
+                <strong>请先完成一次普通仿真</strong>
+              </div>
+              <div id="agentContent" hidden>
+                <div class="inspector-title agent-title">
+                  <div>
+                    <span class="eyebrow">可选 · 目标驱动</span>
+                    <h2>Agent 优化</h2>
+                  </div>
+                  <span class="confidence" id="agentMode">可选工具</span>
+                </div>
+
+                <form class="agent-form" id="agentForm">
+                  <label class="agent-goal-field">
+                    <span>优化目标</span>
+                    <textarea id="agentInstruction" maxlength="1000" rows="3" required>检查当前热仿真，并校核能量平衡与热源映射。</textarea>
+                  </label>
+                  <div class="agent-parameter-grid">
+                    <label>
+                      <span>峰值上限 <i>绝对 K</i></span>
+                      <input id="agentTargetMax" type="number" min="1" max="1000000" step="any" placeholder="可选" />
+                    </label>
+                    <label>
+                      <span>峰值下限 <i>绝对 K</i></span>
+                      <input id="agentTargetMin" type="number" min="1" max="1000000" step="any" placeholder="可选" />
+                    </label>
+                    <label>
+                      <span>温度容差 <i>K</i></span>
+                      <input id="agentTemperatureTolerance" type="number" min="0.001" max="100" step="any" value="1" required />
+                    </label>
+                    <label>
+                      <span>能量误差上限</span>
+                      <input id="agentEnergyTolerance" type="number" min="0.000000000001" max="0.1" step="any" value="0.00001" required />
+                    </label>
+                    <label>
+                      <span>最多自动重算</span>
+                      <select id="agentMaxRounds">
+                        <option value="1">1 轮</option>
+                        <option value="2">2 轮</option>
+                        <option value="3" selected>3 轮</option>
+                        <option value="4">4 轮</option>
+                        <option value="5">5 轮</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="agent-permissions" aria-label="允许自动调整">
+                    <label><input id="agentAllowPower" type="checkbox" checked /> 允许调整热源功率</label>
+                    <label><input id="agentAllowMesh" type="checkbox" checked /> 允许细化求解网格</label>
+                  </div>
+                  <button class="primary-button agent-run-button" id="runAgentButton" type="submit">检查目标并自动优化</button>
+                </form>
+
+                <section class="agent-run" id="agentRun" hidden aria-live="polite">
+                  <header>
+                    <div>
+                      <span class="eyebrow">目标检查</span>
+                      <strong id="agentRunStatus">—</strong>
+                    </div>
+                    <span id="agentRoundCount">—</span>
+                  </header>
+                  <p id="agentRunSummary">—</p>
+                  <button class="agent-study-link" id="agentSelectedStudy" type="button">查看采用研究</button>
+                  <ol class="agent-trace" id="agentTrace"></ol>
+                </section>
+              </div>
+            </section>
+          </div>
+
+          <details class="modeling-drawer" id="modelingDrawer" hidden>
+            <summary>建模对话 <span id="draftSaveStatus" role="status">草案已保存</span></summary>
+            <div class="modeling-body">
+              <div id="modelingMessages" class="modeling-messages" aria-live="polite"></div>
+              <p id="modelingPrivacy" class="modeling-status" hidden>对话仅保留在当前页面会话；结构化草案仍会保存。</p>
+              <section id="modelingProposal" class="modeling-proposal" hidden>
+                <h3>待应用建议</h3>
+                <div id="modelingChanges"></div>
+                <ul id="modelingValidation"></ul>
+                <div class="modeling-actions">
+                  <button id="applyModeling" class="primary-button" type="button">应用到草案</button>
+                  <button id="dismissModeling" class="source-reset-button" type="button">放弃建议</button>
+                </div>
+              </section>
+              <form id="modelingForm" class="modeling-form">
+                <label for="modelingInput">补充条件或修改要求</label>
+                <textarea id="modelingInput" rows="2" maxlength="4000" required></textarea>
+                <div class="modeling-actions">
+                  <button id="undoModeling" class="icon-button" type="button" title="撤销上次应用的建议" aria-label="撤销上次应用的建议" hidden>↶</button>
+                  <button id="reloadDraft" class="source-reset-button" type="button" hidden>重新载入草案</button>
+                  <button id="sendModeling" class="primary-button" type="submit">发送</button>
+                </div>
+              </form>
+            </div>
+          </details>
+          <div class="inspector-action">
+            <button class="primary-button" id="primaryAction" type="button" disabled>选择工件</button>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <dialog class="workpiece-dialog" id="workpieceDialog">
+      <form id="workpieceForm" method="dialog">
+        <header class="dialog-heading">
+          <div>
+            <span class="eyebrow">几何导入</span>
+            <h2>导入 STL 工件</h2>
+          </div>
+          <button class="icon-button" id="closeDialogButton" type="button" title="关闭" aria-label="关闭">
+            <span aria-hidden="true">×</span>
+          </button>
+        </header>
+
+        <label class="file-drop" for="cadFile">
+          <input id="cadFile" type="file" accept=".stl,model/stl" required />
+          <span class="file-symbol" aria-hidden="true">⇧</span>
+          <strong id="fileLabel">选择 STL 文件</strong>
+          <small>支持二进制/ASCII STL、开放网格与多壳体</small>
+        </label>
+
+        <label class="field-label import-destination">
+          <span>导入位置</span>
+          <select id="importProjectMode">
+            <option value="new">创建同名新项目</option>
+            <option id="currentProjectOption" value="current">加入当前项目</option>
+          </select>
+        </label>
+
+        <div class="segmented-control parameter-mode" role="tablist" aria-label="参数模式">
+          <button class="segment is-active" id="autoModeButton" type="button" role="tab" aria-selected="true">全部自动补齐</button>
+          <button class="segment" id="customModeButton" type="button" role="tab" aria-selected="false">我来指定参数</button>
+        </div>
+
+        <div class="custom-parameters" id="customParameterFields" hidden>
+          <p class="upload-parameter-hint">这里填写的值会在确认 STL 单位后带入可编辑仿真草案；未填写的项目仍由规划器补齐。</p>
+          <fieldset class="parameter-group">
+            <legend>物理设置</legend>
+            <div class="parameter-grid">
+              <label class="field-label field-wide">
+                <span>工件材料</span>
+                <select id="materialName">
+                  <option value="">自动补齐（导入后可修改）</option>
+                </select>
+              </label>
+              <label class="field-label">
+                <span>导热系数 <i>W/(m·K)</i></span>
+                <input id="thermalConductivity" type="number" min="0.011" max="5000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>材料密度 <i>kg/m³</i></span>
+                <input id="materialDensity" type="number" min="1.01" max="30000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>比热容 <i>J/(kg·K)</i></span>
+                <input id="specificHeat" type="number" min="1.01" max="20000" step="any" placeholder="自动补齐" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="parameter-group">
+            <legend>热源设置</legend>
+            <div class="parameter-grid">
+              <label class="field-label">
+                <span>热源类型</span>
+                <select id="heatSourceShape">
+                  <option value="">自动补齐</option>
+                  <option value="point">点热源</option>
+                  <option value="line">线热源</option>
+                  <option value="surface">面热源</option>
+                  <option value="volume">体热源</option>
+                </select>
+              </label>
+              <label class="field-label">
+                <span>放置方式</span>
+                <select id="heatSourcePlacement">
+                  <option value="">自动补齐</option>
+                  <option value="surface">贴附表面</option>
+                  <option value="embedded">嵌入工件</option>
+                </select>
+              </label>
+              <label class="field-label" data-upload-placement="embedded" hidden>
+                <span>嵌入深度 <i>mm</i></span>
+                <input id="heatSourceDepth" type="number" min="0" max="1000000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>热源功率 <i>W</i></span>
+                <input id="heatSourcePower" type="number" min="0.000001" max="10000000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label" data-upload-hide-for="surface volume">
+                <span>作用半径 <i>mm</i></span>
+                <input id="heatSourceRadius" type="number" min="0.000001" max="1000000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>位置 X <i>mm</i></span>
+                <input id="heatSourceX" type="number" min="-1000000" max="1000000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>位置 Y <i>mm</i></span>
+                <input id="heatSourceY" type="number" min="-1000000" max="1000000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>位置 Z <i>mm</i></span>
+                <input id="heatSourceZ" type="number" min="-1000000" max="1000000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label" data-upload-source="line" hidden>
+                <span>终点 X <i>mm</i></span>
+                <input id="heatSourceEndX" type="number" min="-1000000" max="1000000" step="any" placeholder="必填" />
+              </label>
+              <label class="field-label" data-upload-source="line" hidden>
+                <span>终点 Y <i>mm</i></span>
+                <input id="heatSourceEndY" type="number" min="-1000000" max="1000000" step="any" placeholder="必填" />
+              </label>
+              <label class="field-label" data-upload-source="line" hidden>
+                <span>终点 Z <i>mm</i></span>
+                <input id="heatSourceEndZ" type="number" min="-1000000" max="1000000" step="any" placeholder="必填" />
+              </label>
+              <label class="field-label" data-upload-source="surface" hidden>
+                <span>面法向</span>
+                <select id="heatSourceSurfaceAxis">
+                  <option value="x">X 轴</option>
+                  <option value="y">Y 轴</option>
+                  <option value="z">Z 轴</option>
+                </select>
+              </label>
+              <label class="field-label" data-upload-source="surface" hidden>
+                <span>面宽 <i>mm</i></span>
+                <input id="heatSourceWidth" type="number" min="0.000001" max="1000000" step="any" placeholder="必填" />
+              </label>
+              <label class="field-label" data-upload-source="surface" hidden>
+                <span>面高 <i>mm</i></span>
+                <input id="heatSourceHeight" type="number" min="0.000001" max="1000000" step="any" placeholder="必填" />
+              </label>
+              <label class="field-label" data-upload-source="surface" hidden>
+                <span>映射厚度 <i>mm</i></span>
+                <input id="heatSourceThickness" type="number" min="0.000001" max="1000000" step="any" placeholder="必填" />
+              </label>
+              <label class="field-label" data-upload-source="volume" hidden>
+                <span>体尺寸 X <i>mm</i></span>
+                <input id="heatSourceVolumeWidth" type="number" min="0.000001" max="1000000" step="any" placeholder="必填" />
+              </label>
+              <label class="field-label" data-upload-source="volume" hidden>
+                <span>体尺寸 Y <i>mm</i></span>
+                <input id="heatSourceVolumeHeight" type="number" min="0.000001" max="1000000" step="any" placeholder="必填" />
+              </label>
+              <label class="field-label" data-upload-source="volume" hidden>
+                <span>体尺寸 Z <i>mm</i></span>
+                <input id="heatSourceVolumeDepth" type="number" min="0.000001" max="1000000" step="any" placeholder="必填" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="parameter-group">
+            <legend>边界与散热</legend>
+            <div class="parameter-grid">
+              <label class="field-label">
+                <span>定温面轴</span>
+                <select id="heatAxis">
+                  <option value="">自动补齐</option>
+                  <option value="x">X 轴</option>
+                  <option value="y">Y 轴</option>
+                  <option value="z">Z 轴</option>
+                </select>
+              </label>
+              <label class="field-label">
+                <span>最小侧温度 <i>K</i></span>
+                <input id="minFaceTemperature" type="number" min="1" max="5000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>最大侧温度 <i>K</i></span>
+                <input id="maxFaceTemperature" type="number" min="1" max="5000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>环境温度 <i>K</i></span>
+                <input id="ambientTemperature" type="number" min="1" max="5000" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>对流换热系数 <i>W/(m²·K)</i></span>
+                <input id="convectionCoefficient" type="number" min="0.000001" max="1000000" step="any" placeholder="自动补齐" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="parameter-group">
+            <legend>数值设置</legend>
+            <div class="parameter-grid">
+              <label class="field-label">
+                <span>目标体素 <i>mm</i></span>
+                <input id="targetElementSize" type="number" min="0.001" max="100000" step="any" placeholder="自动" />
+              </label>
+              <label class="field-label">
+                <span>单轴区间上限</span>
+                <input id="maxAxisIntervals" type="number" min="2" max="100" step="1" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>相对收敛容差</span>
+                <input id="relativeTolerance" type="number" min="0.000000000001" max="0.001" step="any" placeholder="自动补齐" />
+              </label>
+              <label class="field-label">
+                <span>最大迭代次数</span>
+                <input id="maxIterations" type="number" min="10" max="100000" step="1" placeholder="自动补齐" />
+              </label>
+            </div>
+          </fieldset>
+        </div>
+
+        <footer class="dialog-actions">
+          <button class="secondary-button" id="cancelDialogButton" type="button">取消</button>
+          <button class="primary-button" id="submitWorkpieceButton" type="submit">导入并检查</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="workpiece-dialog component-dialog" id="componentDialog">
+      <form id="componentRenameForm" method="dialog">
+        <header class="dialog-heading">
+          <div><span class="eyebrow">组件属性</span><h2>重命名组件</h2></div>
+          <button class="icon-button" id="closeComponentDialogButton" type="button" title="关闭" aria-label="关闭">
+            <span aria-hidden="true">×</span>
+          </button>
+        </header>
+        <label class="field-label">
+          <span>组件名称</span>
+          <input id="componentNameInput" type="text" minlength="1" maxlength="120" required />
+        </label>
+        <footer class="dialog-actions">
+          <button class="secondary-button" id="cancelComponentRenameButton" type="button">取消</button>
+          <button class="primary-button" type="submit">保存名称</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="workpiece-dialog component-dialog" id="surfaceRegionDialog">
+      <form id="surfaceRegionForm">
+        <header class="dialog-heading"><h2>保存选面区域</h2></header>
+        <label class="field-label"><span>区域名称</span><input id="surfaceRegionName" type="text" maxlength="120" required /></label>
+        <footer class="dialog-actions">
+          <button class="secondary-button" id="cancelSurfaceRegion" type="button">取消</button>
+          <button class="primary-button" id="submitSurfaceRegion" type="submit">保存区域</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="diagnostics-dialog" id="diagnosticsDialog">
+      <header class="dialog-heading">
+        <div><span class="eyebrow">高级诊断</span><h2>服务状态</h2></div>
+        <button class="icon-button" id="closeDiagnosticsButton" type="button" title="关闭" aria-label="关闭">×</button>
+      </header>
+      <dl class="inspector-list">
+        <div><dt>求解服务</dt><dd id="diagnosticService">—</dd></div>
+        <div><dt>计算资源</dt><dd id="diagnosticCompute">—</dd></div>
+        <div><dt>Agent 服务</dt><dd id="diagnosticAgent">—</dd></div>
+      </dl>
+      <a class="secondary-button diagnostic-api-link" href="/api/docs" target="_blank" rel="noreferrer">打开开发者 API</a>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/assets/source-editor-model.js?v=20260908-3" defer></script>
+    <script src="/assets/transient-display.js?v=20260909-1" defer></script>
+    <script src="/assets/app.js?v=20260909-5" defer></script>
+  </body>
+</html>
