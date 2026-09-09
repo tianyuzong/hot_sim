@@ -34,7 +34,7 @@ def test_workpiece_only_api_runs_end_to_end(tmp_path) -> None:
     assert 'id="probeReadout"' in workbench.text
     assert 'id="resultHotspot"' in workbench.text
     assert 'id="confirmMaterials"' in workbench.text
-    assert "应用并求解" in workbench.text
+    assert 'id="applySourceButton"' in workbench.text
     assert client.get("/assets/styles.css").status_code == 200
     assert client.get("/assets/app.js").status_code == 200
     assert client.get("/api/docs").status_code == 200

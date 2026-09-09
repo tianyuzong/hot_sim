@@ -9,6 +9,14 @@
     return Number.isFinite(number) ? number : null;
   }
 
+  function legendValues(lowK, highK, difference = false) {
+    const offset = difference ? 0 : 273.15;
+    return {
+      values: [lowK, (lowK + highK) / 2, highK].map(value => Number((value - offset).toFixed(9))),
+      unit: difference ? "Δ℃" : "℃",
+    };
+  }
+
   function diffusionScale(frames, toleranceK = DEFAULT_TOLERANCE_K) {
     if (!Array.isArray(frames) || !frames.length) {
       throw new Error("热扩散视图缺少真实播放帧");
@@ -96,6 +104,7 @@
 
   global.ThermoFlowTransient = {
     DEFAULT_TOLERANCE_K,
+    legendValues,
     diffusionScale,
     diffusionScalars,
     materialRangeWarnings,

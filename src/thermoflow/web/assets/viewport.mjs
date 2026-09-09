@@ -217,16 +217,28 @@ export class EngineeringViewport {
 
   async fetchSurface(path, body, signal, key) {
     if (this.cache.has(key)) return this.cache.get(key);
-    const response = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body), signal } : { signal });
-    if (!response.ok) {
-      const error = await response.json().catch(() => null);
-      throw new Error(typeof error?.detail === "string" ? error.detail : "三维数据读取失败，请重新打开研究");
+    const previous = this.readQueue;
+    let release;
+    this.readQueue = new Promise(resolve => { release = resolve; });
+    await previous;
+    try {
+      signal?.throwIfAborted();
+      if (this.cache.has(key)) return this.cache.get(key);
+      // Aborting fetch does not stop the server's VTK reader. Let an active
+      // read finish, then skip obsolete queued views and fetch the latest one.
+      const response = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body) } : {});
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(typeof error?.detail === "string" ? error.detail : "三维数据读取失败，请重新打开研究");
+      }
+      const data = await response.json();
+      this.cache.set(key, data);
+      if (this.cache.size > 3) this.cache.delete(this.cache.keys().next().value);
+      return data;
+    } finally {
+      release();
     }
-    const data = await response.json();
-    this.cache.set(key, data);
-    if (this.cache.size > 3) this.cache.delete(this.cache.keys().next().value);
-    return data;
   }
 
   update(options) {

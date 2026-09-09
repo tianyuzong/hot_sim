@@ -65,6 +65,7 @@ class EngineeringPlaybackFrame(StrictModel):
     time_s: float = Field(ge=0)
     temperature_k: list[float]
     source_sha256: str
+    source_artifact: str | None = None
     minimum_position_mm: tuple[float, float, float] | None = None
     maximum_position_mm: tuple[float, float, float] | None = None
     temperature_min_k: float
@@ -223,7 +224,9 @@ def _cell_components(repository, study, cells, points):
 
 
 def study_surface(repository: FileRepository, study_id: str, request: ViewRequest) -> EngineeringSurface:
-    with repository.study_lock(study_id):
+    # Rapid view changes overlap on large models; readonly requests should wait
+    # for each other, not report a fictitious active computation to the user.
+    with repository.study_lock(study_id, blocking=True):
         study, points, cells, temperature, nodal, flux, fingerprint, time = _read_volume(repository, study_id, request)
         if request.difference_study_id:
             other_request = request.model_copy(update={"difference_study_id": None})
@@ -277,36 +280,68 @@ def study_playback(repository: FileRepository, study_id: str) -> EngineeringPlay
     result = repository.get_result(study_id)
     if not result.time_steps:
         raise RecordNotFoundError("该研究没有瞬态播放帧")
-    surfaces = [
-        study_surface(repository, study_id, ViewRequest(frame_index=step.index))
-        for step in result.time_steps
-    ]
-    geometry = surfaces[0]
-    for surface in surfaces[1:]:
-        if (surface.vertices != geometry.vertices or surface.triangles != geometry.triangles
-                or surface.component_ids != geometry.component_ids
-                or surface.cell_ids != geometry.cell_ids):
-            raise ValueError("瞬态播放帧的计算网格不一致，请重新计算研究")
-    return EngineeringPlayback(
-        study_id=study_id,
-        vertices=geometry.vertices,
-        triangles=geometry.triangles,
-        component_ids=geometry.component_ids,
-        cell_ids=geometry.cell_ids,
-        total_cells=geometry.total_cells,
-        frames=[EngineeringPlaybackFrame(
-            index=step.index,
-            time_s=surface.time_s if surface.time_s is not None else step.time_s,
-            temperature_k=surface.temperature_k or [],
-            source_sha256=surface.source_sha256,
-            minimum_position_mm=surface.minimum_position_mm,
-            maximum_position_mm=surface.maximum_position_mm,
-            temperature_min_k=surface.temperature_min_k if surface.temperature_min_k is not None
-            else step.temperature_min_k,
-            temperature_max_k=surface.temperature_max_k if surface.temperature_max_k is not None
-            else step.temperature_max_k,
-        ) for step, surface in zip(result.time_steps, surfaces, strict=True)],
-    )
+    # Extract exterior topology once. Keeping 201 complete EngineeringSurfaces
+    # also kept duplicate geometry and unused vector fields for every frame.
+    with repository.study_lock(study_id, blocking=True):
+        frames = []
+        artifacts = {item.name: item for item in result.artifacts}
+        reference_points = reference_cells = None
+        for step in result.time_steps:
+            compact_name = f"thermal-{step.index:04d}.npz"
+            compact_artifact = artifacts.get(compact_name)
+            source_artifact = step.vtk_artifact
+            if reference_points is None or compact_artifact is None:
+                study, points, cells, temperature, nodal, _, fingerprint, time = _read_volume(
+                    repository, study_id, ViewRequest(frame_index=step.index),
+                )
+            if reference_points is None:
+                reference_points, reference_cells = points, cells
+                faces = cells[:, HEX_FACES].reshape(-1, 4)
+                _, inverse, counts = np.unique(np.sort(faces, axis=1), axis=0,
+                                               return_inverse=True, return_counts=True)
+                exterior = counts[inverse] == 1
+                owners = np.repeat(np.arange(len(cells)), 6)[exterior]
+                surface_nodes, surface_indices = np.unique(faces[exterior], return_inverse=True)
+                quads = surface_indices.reshape(-1, 4)
+                triangles = quads[:, [[0, 1, 2], [0, 2, 3]]].reshape(-1, 3)
+                components = _cell_components(repository, study, cells, points)
+                centers = points[cells].mean(axis=1)
+            elif not np.array_equal(points, reference_points) or not np.array_equal(cells, reference_cells):
+                raise ValueError("瞬态播放帧的计算网格不一致，请重新计算研究")
+            if compact_artifact is not None:
+                path = repository.artifact_path(study_id, compact_name)
+                fingerprint = hashlib.sha256(path.read_bytes()).hexdigest()
+                if fingerprint != compact_artifact.sha256:
+                    raise ValueError("播放帧数值文件校验失败，请重新生成研究")
+                # These are the full solver arrays, not preview samples. Preserve
+                # their original precision and verify cell ownership and time.
+                with np.load(path, allow_pickle=False) as data:
+                    temperature = data["temperature_k"]
+                    frame_centers = data["centers_mm"]
+                    time = float(data["time_s"])
+                if (temperature.shape != (len(reference_cells),)
+                        or frame_centers.shape != centers.shape
+                        or not np.isfinite(temperature).all()
+                        or not np.allclose(frame_centers, centers, rtol=0, atol=1e-8)
+                        or not np.isclose(time, step.time_s, rtol=1e-12, atol=1e-12)):
+                    raise ValueError("播放帧的真实温度、网格或时刻不一致")
+                points, cells, nodal = reference_points, reference_cells, None
+                source_artifact = compact_name
+            field = nodal if nodal is not None else _cell_to_nodal(cells, temperature, len(points))
+            values, positions = (nodal, points) if nodal is not None else (temperature, centers)
+            frames.append(EngineeringPlaybackFrame(
+                index=step.index, time_s=time if time is not None else step.time_s,
+                temperature_k=field[surface_nodes].reshape(-1).tolist(), source_sha256=fingerprint,
+                source_artifact=source_artifact,
+                minimum_position_mm=tuple(positions[int(values.argmin())]),
+                maximum_position_mm=tuple(positions[int(values.argmax())]),
+                temperature_min_k=float(values.min()), temperature_max_k=float(values.max()),
+            ))
+        return EngineeringPlayback(
+            study_id=study_id, vertices=reference_points[surface_nodes].tolist(),
+            triangles=triangles.tolist(), component_ids=np.repeat(components[owners], 2).tolist(),
+            cell_ids=np.repeat(owners, 2).tolist(), total_cells=len(reference_cells), frames=frames,
+        )
 
 
 def _section(points, cells, nodal, request):
@@ -333,7 +368,7 @@ def _section(points, cells, nodal, request):
 
 
 def probe_cell(repository: FileRepository, study_id: str, cell_id: int, frame_index: int | None) -> CellProbe:
-    with repository.study_lock(study_id):
+    with repository.study_lock(study_id, blocking=True):
         study, points, cells, temperature, _, flux, fingerprint, time = _read_volume(
             repository, study_id, ViewRequest(frame_index=frame_index),
         )

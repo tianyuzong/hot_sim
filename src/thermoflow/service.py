@@ -528,6 +528,8 @@ class StudyService:
         overrides: SimulationOverrides | None = None,
         purpose: str = "",
         require_confirmation: bool = False,
+        *,
+        planning_mode: str = "ai",
     ) -> StudyRecord:
         workpiece = self.get_workpiece(workpiece_id)
         project = self._project_for_workpiece(workpiece)
@@ -551,7 +553,11 @@ class StudyService:
         decision = None
         policy = None
         for attempt in range(1, 3):
-            decision = self.planner.plan(workpiece, feedback, attempt, purpose)
+            if planning_mode == "manual":
+                from .manual import manual_stl_template
+                decision = manual_stl_template(workpiece)
+            else:
+                decision = self.planner.plan(workpiece, feedback, attempt, purpose)
             plan = apply_user_overrides(decision.plan, overrides)
             assignments = plan.component_materials or [
                 ComponentMaterialAssignment(
@@ -569,7 +575,7 @@ class StudyService:
                 else assignment
                 for assignment in assignments
             ]
-            missing_information = _draft_missing_information(overrides) if require_confirmation else []
+            missing_information = _draft_missing_information(overrides) if require_confirmation and planning_mode != "manual" else []
             confirmation = ConfirmationRecord(
                 status="needs_input" if require_confirmation else "confirmed",
                 confirmed_by=None if require_confirmation else "API 调用方",

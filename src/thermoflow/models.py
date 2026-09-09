@@ -703,12 +703,23 @@ class PlannerProvenance(StrictModel):
     attempts: int = Field(ge=1, le=3)
 
 
+class PolicyIssue(StrictModel):
+    """A policy diagnostic that can point the editor to affected inputs."""
+
+    code: str
+    severity: Literal["error", "warning"]
+    message: str
+    suggestion: str = ""
+    fields: list[str] = Field(default_factory=list)
+
+
 class PolicyReport(StrictModel):
     """确定性安全策略的校验结果。"""
 
     accepted: bool
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    issues: list[PolicyIssue] = Field(default_factory=list)
     derived: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -911,6 +922,7 @@ class StudyCreateRequest(StrictModel):
         description="可选的用户参数；未指定项继续由 GPT 决定",
     )
     purpose: str = Field(default="", max_length=1_000)
+    planning_mode: Literal["ai", "manual"] = "ai"
     require_confirmation: Literal[True] = True
 
 

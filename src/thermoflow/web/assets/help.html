@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#171a1d" />
+    <meta
+      name="description"
+      content="ThermoFlow 新手使用说明：从导入 STL 到查看真实温度结果。"
+    />
+    <title>新手入门 · ThermoFlow 使用说明</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #171a1d;
+        --muted: #5f6b72;
+        --line: #dfe4e6;
+        --paper: #ffffff;
+        --canvas: #f3f5f4;
+        --accent: #146b61;
+        --accent-soft: #e8f3f0;
+        --warning: #8a5a0a;
+        --warning-soft: #fff7e6;
+        --danger: #9a382f;
+        --danger-soft: #fff0ed;
+        --radius: 16px;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 24px;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--canvas);
+        font-size: 16px;
+        line-height: 1.72;
+      }
+
+      a { color: var(--accent); }
+
+      a:hover { text-decoration-thickness: 2px; }
+
+      a:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid rgba(20, 107, 97, 0.28);
+        outline-offset: 4px;
+        border-radius: 4px;
+      }
+
+      .skip-link {
+        position: fixed;
+        z-index: 10;
+        top: 8px;
+        left: 8px;
+        padding: 8px 12px;
+        color: #fff;
+        background: var(--ink);
+        border-radius: 8px;
+        transform: translateY(-150%);
+      }
+
+      .skip-link:focus { transform: translateY(0); }
+
+      .manual-header {
+        color: #fff;
+        background: var(--ink);
+        border-bottom: 1px solid #30363a;
+      }
+
+      .manual-header__inner {
+        width: min(1180px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 22px 0 26px;
+      }
+
+      .manual-header__bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .brand-mark {
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        flex: 0 0 auto;
+        border: 1px solid #4e5a5f;
+        border-radius: 10px;
+        color: #8ad7c9;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+      }
+
+      .brand strong,
+      .brand span { display: block; }
+
+      .brand strong { font-size: 1rem; }
+
+      .brand span { color: #aeb8bc; font-size: 0.78rem; }
+
+      .back-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 8px 12px;
+        color: #fff;
+        border: 1px solid #4e5a5f;
+        border-radius: 9px;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      .back-link:hover { border-color: #8ad7c9; }
+
+      .eyebrow {
+        display: block;
+        margin-top: 34px;
+        color: #8ad7c9;
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+      }
+
+      h1 {
+        margin: 4px 0 8px;
+        font-size: clamp(2rem, 5vw, 3.7rem);
+        line-height: 1.12;
+        letter-spacing: -0.04em;
+      }
+
+      .lede {
+        max-width: 760px;
+        margin: 0;
+        color: #c7ced1;
+        font-size: 1.04rem;
+      }
+
+      .manual-layout {
+        display: grid;
+        grid-template-columns: minmax(190px, 238px) minmax(0, 1fr);
+        gap: 28px;
+        width: min(1180px, calc(100% - 40px));
+        margin: 30px auto 64px;
+      }
+
+      .toc {
+        position: sticky;
+        top: 24px;
+        align-self: start;
+        padding: 18px;
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+      }
+
+      .toc strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 0.84rem;
+        letter-spacing: 0.08em;
+      }
+
+      .toc ol {
+        margin: 0;
+        padding-left: 1.35rem;
+      }
+
+      .toc li { margin: 4px 0; }
+
+      .toc a {
+        color: #3e4a50;
+        text-decoration: none;
+      }
+
+      .toc a:hover { color: var(--accent); text-decoration: underline; }
+
+      main { min-width: 0; }
+
+      section {
+        margin-bottom: 22px;
+        padding: clamp(22px, 4vw, 36px);
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+      }
+
+      h2 {
+        margin: 0 0 16px;
+        font-size: clamp(1.35rem, 3vw, 1.8rem);
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+      }
+
+      h3 {
+        margin: 26px 0 8px;
+        font-size: 1.05rem;
+        line-height: 1.35;
+      }
+
+      p { margin: 8px 0 14px; }
+
+      ul,
+      ol { padding-left: 1.45rem; }
+
+      li + li { margin-top: 8px; }
+
+      code {
+        padding: 0.12em 0.36em;
+        color: #274039;
+        background: #edf1ef;
+        border-radius: 5px;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 0.9em;
+        overflow-wrap: anywhere;
+      }
+
+      .steps {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: step;
+      }
+
+      .steps li {
+        position: relative;
+        min-height: 42px;
+        padding-left: 54px;
+        counter-increment: step;
+      }
+
+      .steps li::before {
+        content: counter(step);
+        position: absolute;
+        top: 1px;
+        left: 0;
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        color: var(--accent);
+        background: var(--accent-soft);
+        border-radius: 50%;
+        font-weight: 800;
+      }
+
+      .callout {
+        margin: 18px 0;
+        padding: 14px 16px;
+        border-left: 4px solid var(--accent);
+        border-radius: 0 10px 10px 0;
+        background: var(--accent-soft);
+      }
+
+      .callout.warning {
+        border-left-color: var(--warning);
+        background: var(--warning-soft);
+      }
+
+      .callout.danger {
+        border-left-color: var(--danger);
+        background: var(--danger-soft);
+      }
+
+      .callout strong { display: block; }
+
+      .comparison {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin: 16px 0;
+      }
+
+      .comparison article {
+        padding: 16px;
+        background: #f7f9f8;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+
+      .comparison h3 { margin-top: 0; }
+
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 16px 0;
+      }
+
+      .facts div {
+        padding: 13px;
+        background: #f7f9f8;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+
+      .facts dt { color: var(--muted); font-size: 0.8rem; }
+
+      .facts dd { margin: 2px 0 0; font-weight: 750; }
+
+      details {
+        border-top: 1px solid var(--line);
+        padding: 14px 0;
+      }
+
+      details:last-child { padding-bottom: 0; }
+
+      summary {
+        color: #27343a;
+        cursor: pointer;
+        font-weight: 750;
+      }
+
+      details > :not(summary) { margin-left: 22px; }
+
+      .muted { color: var(--muted); }
+
+      .manual-footer {
+        padding: 24px 20px 36px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      @media (max-width: 820px) {
+        .manual-layout { grid-template-columns: 1fr; }
+        .toc { position: static; }
+        .toc ol { columns: 2; }
+        .facts { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 560px) {
+        .manual-header__inner,
+        .manual-layout { width: min(100% - 24px, 1180px); }
+        .manual-header__bar { align-items: flex-start; }
+        .brand span { display: none; }
+        .back-link { padding: 7px 9px; font-size: 0.9rem; }
+        .toc ol { columns: 1; }
+        .comparison { grid-template-columns: 1fr; }
+        section { padding: 20px 18px; }
+        .steps li { padding-left: 46px; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到正文</a>
+
+    <header class="manual-header">
+      <div class="manual-header__inner">
+        <div class="manual-header__bar">
+          <div class="brand" aria-label="ThermoFlow 智能工程仿真平台">
+            <span class="brand-mark" aria-hidden="true">TF</span>
+            <div>
+              <strong>ThermoFlow</strong>
+              <span>智能工程仿真平台</span>
+            </div>
+          </div>
+          <a class="back-link" href="/docs" aria-label="返回 ThermoFlow 工作台">← 返回工作台</a>
+        </div>
+        <span class="eyebrow">使用说明</span>
+        <h1>新手入门</h1>
+        <p class="lede">从导入 STL 到读懂结果，一次完成可复核的固体导热仿真。普通手动流程不依赖 AI。</p>
+      </div>
+    </header>
+
+    <div class="manual-layout">
+      <nav class="toc" aria-label="本页目录">
+        <strong>本页目录</strong>
+        <ol>
+          <li><a href="#start">快速开始</a></li>
+          <li><a href="#materials">材料</a></li>
+          <li><a href="#sources">热源</a></li>
+          <li><a href="#boundaries">边界与温度</a></li>
+          <li><a href="#solving">网格与求解</a></li>
+          <li><a href="#results">查看结果</a></li>
+          <li><a href="#troubleshooting">常见问题</a></li>
+        </ol>
+      </nav>
+
+      <main id="main">
+        <section id="start" aria-labelledby="start-title">
+          <h2 id="start-title">快速开始：第一次先跑通这 8 步</h2>
+          <div class="callout">
+            <strong>请从服务地址进入</strong>
+            点击<a href="/docs">打开当前服务工作区</a>（当前服务地址的 <code>/docs</code>）。本次 firework 端口转发地址是 <code>http://127.0.0.1:18080/docs</code>；自行安装时默认端口是 <code>8000</code>，以实际启动配置为准。不要双击 HTML 文件，也不要使用 <code>file://</code>；本页面需要同一服务提供项目、求解和结果接口。
+          </div>
+          <ol class="steps">
+            <li><strong>导入几何。</strong>点击左侧“导入 STL”，选择文件，保留“先导入，随后设置”即可。</li>
+            <li><strong>确认尺度。</strong>在“几何”里选择真实的“文件坐标单位”。常见机械 STL 使用 <strong>mm</strong>，但一定要对照“确认后实际尺寸”；把 mm 误选成 m 会让结果完全失真。</li>
+            <li><strong>确认材料。</strong>在“材料”中逐组件选择材料目录项，或选择“自定义物性（下方填写）”。核对后勾选“我已逐组件确认当前材料、导热系数、密度和比热容”。</li>
+            <li><strong>进入工况。</strong>点击“下一步：热源与时长”。第一次建议选择瞬态导热，并从简单工况开始。</li>
+            <li><strong>放置热源。</strong>点击“打开热源编辑器”，按需建立点、线、面或体热源；若使用“嵌入工件”，稍后务必检查网格中的实际映射。</li>
+            <li><strong>填写起步参数。</strong>室温输入 <strong>293.15 K（20℃）</strong>；可先用“工作持续时间” <strong>60 s</strong>、“时间步长” <strong>0.3 s</strong>。点击“应用到草案”。这些只是便于首次跑通的起步值，不是所有模型的推荐工程参数。</li>
+            <li><strong>检查并计算。</strong>先查看右侧“参数检查”：红色是必须修改的冲突，黄色是需要核对的风险，点击“定位”可跳到输入项。修改后等待草案保存并重新检查，再勾选“我已检查材料、热源、初始温度、散热条件与网格设置”，点击“确认并开始仿真”。系统会自动生成网格并求解；出现网格复核时先读提示，再决定是否接受。</li>
+            <li><strong>查看结果。</strong>进入“结果”后，若看到“一次加载 201 个真实温度帧…”，请等待预加载完成。随后播放或拖动时间条，并优先查看“真实温度”。</li>
+          </ol>
+
+          <div class="comparison" aria-label="稳态与瞬态的区别">
+            <article>
+              <h3>稳态导热</h3>
+              <p>回答“边界长期保持后，最终温度场怎样”。它没有加热过程和时间帧，适合关心最终平衡状态时使用。</p>
+            </article>
+            <article>
+              <h3>瞬态导热</h3>
+              <p>回答“温度随时间怎样传播”。需要初始温度、持续时间和时间步长，适合观察热源附近先升温、再向远处扩散的过程。</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="materials" aria-labelledby="materials-title">
+          <h2 id="materials-title">材料：STL 不会告诉你它是什么材质</h2>
+          <p>平台提供铝合金 6061-T6、C110 紫铜、304 不锈钢和 Inconel 718 等目录项，也允许填写自定义导热系数、密度和比热容。目录中的默认候选值不是从 STL 推断出的实物材料，必须逐组件核对。</p>
+          <ul>
+            <li><strong>导热系数</strong>影响热量传播速度与温度梯度；<strong>密度 × 比热容</strong>决定单位体积储热能力。</li>
+            <li>结果超出材料数据的有效温区，或材料未提供完整有效温区时，页面会警告。当前后端仍以常物性外推，不能据此认为高温物性仍准确。</li>
+            <li>已完成的研究会锁定输入。要改材料，请点击“修改材料与物性（保留原结果）”创建可编辑副本，重新确认并求解；旧温度场不能当作新材料的结果。</li>
+          </ul>
+        </section>
+
+        <section id="sources" aria-labelledby="sources-title">
+          <h2 id="sources-title">热源：位置是固定方案，不是运动轨迹</h2>
+          <p>“局部功率热源”以 W 输入功率。点击“打开热源编辑器”后，可以用“＋ 新增热源”建立多个独立热源；选中列表中的热源后可修改，使用“删除当前热源”可删除。</p>
+          <dl class="facts" aria-label="热源形状参数">
+            <div><dt>点</dt><dd>位置 + 半径</dd></div>
+            <div><dt>线</dt><dd>起点 + 终点 + 半径</dd></div>
+            <div><dt>面</dt><dd>法向 + 宽高 + 映射厚度</dd></div>
+            <div><dt>体</dt><dd>中心 + X/Y/Z 尺寸</dd></div>
+            <div><dt>贴附表面</dt><dd>靠近外表面放置</dd></div>
+            <div><dt>嵌入工件</dt><dd>按深度映射到实体体素</dd></div>
+          </dl>
+          <div class="callout warning">
+            <strong>检查实际映射，而不只看输入坐标</strong>
+            点和线也会落到有限体积的网格单元，不是数学上的无体积奇点。体素网格可能把输入位置调整到最近的可用单元；网格生成后，请查看实际映射中心、单元数与风险提示。孔洞或空气不能当成实体热源区域。
+          </div>
+          <p>画布上的拖动只是在<strong>修改这一版方案的固定位置</strong>，不表示热源会沿拖动路径运动。每次改变位置、形状、功率或材料，都要重新求解。</p>
+        </section>
+
+        <section id="boundaries" aria-labelledby="boundaries-title">
+          <h2 id="boundaries-title">边界与温度：先做简单、说得清的工况</h2>
+          <h3>最容易理解的第一组工况</h3>
+          <p>仅启用局部功率热源，并启用“未定温表面的全局对流”；初始温度与环境温度都填 293.15 K。先不要额外添加固定冷热端。这样表达的是“室温工件在环境中被局部持续加热”。</p>
+
+          <h3>固定温度不是热源功率</h3>
+          <p>“定温边界”会把所选区域强制保持在指定温度，它代表一个理想恒温约束，不等同于施加多少 W 的加热器。求解器会计算维持该温度所需的净输入或净散热。</p>
+
+          <h3>热流和换热可以按物理需要组合</h3>
+          <p>“表面热流”以 W/m² 指定表面能量流入；“区域对流”描述该区域与流体的换热。当前引擎允许在区域上组合热流、对流（以及需要时的辐射），不能简单理解为“任何重叠都非法”。区域对流会替换该区域原有的全局对流；重复的同类约束、重复定温或映射后温度冲突则会被检查。</p>
+
+          <div class="callout danger">
+            <strong>冲突示例：同一区域被设置成 7 K 和 4 K</strong>
+            如果“定温边界”中有两行都指向 <strong>X 最小侧（Xmin）</strong>，一行 7 K、一行 4 K，它们是在同一区域施加两个互相矛盾的温度，而且 7 K 等于 <strong>−266.15℃</strong>，并不是 7℃。请点对应行右侧的“×”删除不需要的一行；如果确实需要两个温度，应把其中一行明确改到另一个物理区域，并核对三维画布中的区域位置。不要为了让校验通过而随意换区。
+          </div>
+
+          <h3>温度单位要分清</h3>
+          <ul>
+            <li>工况输入使用绝对温度 <strong>K</strong>：20℃ = 293.15 K，7 K = −266.15℃。</li>
+            <li>结果“真实温度”显示 <strong>℃</strong>。</li>
+            <li>“空间温差”显示相对当前最低温度的 <strong>Δ℃</strong>；其中 0 表示“与本帧最低点相同”，不是绝对零度。</li>
+            <li>“相对环境温升”和“温差跨度”中的 K 是温差，1 K 的温差等于 1℃ 的温差。</li>
+          </ul>
+        </section>
+
+        <section id="solving" aria-labelledby="solving-title">
+          <h2 id="solving-title">网格与求解：自动完成，但仍要人工复核</h2>
+          <p>点击“确认并开始仿真”后，系统会自动生成真实体素网格、检查热源和边界映射，然后进入求解。目标单元尺寸越小，通常越能分辨局部特征，但活动单元数、内存和求解时间也会增加。</p>
+          <ul>
+            <li><strong>“需关注”</strong>表示存在非阻断提示。请查看真实网格、体积偏差、各轴活动层、连通性和映射单元数；理解风险后，才勾选“我已查看真实网格和质量提示，并接受本次简化网格的建模风险”。</li>
+            <li><strong>“阻止求解”</strong>是硬性问题，不能靠勾选跳过。需要修改区域、网格或工况后重试。</li>
+            <li>材料温区、开放网格、粗网格、体素近似等提示不一定都是硬错误，但也不能整体忽略。页面中的提示、待确认信息和当前模型范围都需要用户逐条判断。</li>
+          </ul>
+          <div class="callout warning">
+            <strong>体积偏差不是统一精度承诺</strong>
+            已验收的两个支架样例体素体积偏差约为 15.88% 和 17.73%，这只是那两个网格的实际数据，不代表所有模型都会落在 16%–18%。请以当前“网格预览”中的实际数值为准，并用网格加密比较判断结果是否稳定。
+          </div>
+        </section>
+
+        <section id="results" aria-labelledby="results-title">
+          <h2 id="results-title">结果：先看真实温度，再看内部传播</h2>
+          <p>瞬态结果默认从 0 秒开始。若初始温度设置为均匀室温，那么 0 秒的“真实温度”应全工件相同；此时“空间温差”为 0，只表示这一帧各处没有温差。</p>
+          <ol>
+            <li>等待 201 个真实温度帧预加载完成，再播放或拖动时间条。保存时刻可能不是均匀间隔，请以时间条显示的实际秒数为准。</li>
+            <li>“真实温度”使用全时段固定色标，拖动时间时颜色可直接比较，不会因为每帧自动缩放而夸大变化。</li>
+            <li>用“空间温差”观察同一帧的冷热分布，但用“真实温度”判断工件是否整体升温。</li>
+            <li>表面云图不能证明内部温度相同。需要时使用“剖面”，或导出当前帧 / 末态 VTK；精确数值核验以原始单元温度为准。</li>
+          </ol>
+          <p>若热源附近先升温、较远位置随后变化，这是瞬态传热的正常表现。仅凭颜色看起来接近，不能判断已经达到稳态。</p>
+        </section>
+
+        <section id="troubleshooting" aria-labelledby="troubleshooting-title">
+          <h2 id="troubleshooting-title">常见问题</h2>
+
+          <details open>
+            <summary>页面打不开，或项目、结果一直加载不出来</summary>
+            <p>先通过<a href="/docs">当前服务的工作区链接</a>进入，确认不是 <code>file://</code>。本次 firework 使用本机转发端口 <code>18080</code>；自行安装默认使用 <code>8000</code>，以实际配置为准。再检查 ThermoFlow 服务和 SSH 端口转发是否仍在线。不要在同一数据目录重复启动多个服务实例。</p>
+          </details>
+
+          <details>
+            <summary>为什么“确认并开始仿真”不可点击？</summary>
+            <p>依次检查：是否确认 STL 尺度、是否逐组件确认材料、参数输入是否有效、是否勾选“我已检查材料、热源、初始温度、散热条件与网格设置”，以及是否还有待处理的建模建议或保存冲突。</p>
+          </details>
+
+          <details>
+            <summary>为什么同一个定温区域不能填写两次？</summary>
+            <p>同一区域只能有一个确定的固定温度。删除多余行，或把其中一行有意识地改到另一个实际物理区域；若两个不同选区在粗网格上映射到同一批单元且温度不同，也需要调整选面或细化网格。</p>
+          </details>
+
+          <details>
+            <summary>为什么热源坐标看起来正确，却没有映射成功？</summary>
+            <p>输入点可能在孔洞、空气中或离实体体素太远。检查放置方式、嵌入深度、尺寸，以及网格报告里的实际映射中心和单元数；必要时移动热源或细化网格后重算。</p>
+          </details>
+
+          <details>
+            <summary>出现材料有效温区警告，还能继续看结果吗？</summary>
+            <p>可以把结果用于定位设置问题或观察趋势，但不能直接作为工程结论。应换用覆盖该温区的可靠材料数据，或补充温度相关物性后重新验证。</p>
+          </details>
+
+          <details>
+            <summary>这个结果可以直接用于工程定型或认证吗？</summary>
+            <p>不可以。当前后端是体素近似、常物性固体导热模型，尚未替代网格收敛、实测温度对比、温度相关物性、相变或其他所需物理验证。它适合方案检查和迭代，不是工程认证结论。</p>
+          </details>
+
+          <p class="muted">AI 工况描述、建模对话和 Agent 优化都是可选功能。完成上述手动流程不需要调用外部 AI。</p>
+        </section>
+      </main>
+    </div>
+
+    <footer class="manual-footer">
+      ThermoFlow 使用说明 · 请以当前项目的材料、边界和网格复核结果为准
+    </footer>
+  </body>
+</html>

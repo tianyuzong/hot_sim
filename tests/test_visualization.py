@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 import numpy as np
 import pytest
@@ -23,6 +24,23 @@ from thermoflow.settings import Settings
 from thermoflow.storage import RecordNotFoundError
 from thermoflow.visualization import ViewRequest, geometry_surface, probe_cell, study_surface
 from thermoflow.vtk_io import read_solver_vtk
+
+
+def test_overlapping_readonly_views_wait_instead_of_reporting_a_running_task(tmp_path):
+    service, repository = _service(tmp_path)
+    part = service.register_box(BoxWorkpieceInput(name="Concurrent views", dimensions_mm=DimensionsMM(x=10, y=6, z=4)))
+    study = service.create_study(part.workpiece_id)
+    service.run_study(study.study_id)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        for function, arguments in (
+            (study_surface, (repository, study.study_id, ViewRequest())),
+            (probe_cell, (repository, study.study_id, 0, None)),
+        ):
+            with repository.study_lock(study.study_id):
+                pending = pool.submit(function, *arguments)
+                with pytest.raises(TimeoutError):
+                    pending.result(timeout=0.1)
+            assert pending.result(timeout=10).source_sha256
 
 
 def test_full_geometry_has_every_triangle_stable_components_and_confirmed_scale(tmp_path):

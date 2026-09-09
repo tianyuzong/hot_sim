@@ -56,12 +56,12 @@ try {
     await page.waitForFunction(() => document.querySelector("#timeControls").dataset.playbackReady === "true",
       null, { timeout: 8_000 });
     assert(await page.locator("#diffusionViewButton").isVisible());
-    assert.equal(await page.locator("#diffusionViewButton").getAttribute("aria-pressed"), "true",
-      "A transient study must initially open in the spatial diffusion view");
+    assert.equal(await page.locator("#thermalViewButton").getAttribute("aria-pressed"), "true",
+      "A transient study must initially open in actual temperature, not a changing-reference difference");
     assert.match(await page.locator("#thermalLegendTitle").textContent(),
-      /空间温差 ΔT = T − 本帧最低温度 · 全时段固定/);
-    assert(await page.locator("#diffusionReference").isVisible());
-    assert.match(await page.locator("#diffusionReference").textContent(), /当前帧参考 Tmin =/);
+      /真实温度 · ℃ · 全时段固定/);
+    assert(!(await page.locator("#diffusionReference").isVisible()));
+    assert.equal(await page.locator("#timePosition").inputValue(), "0");
     assert(await page.locator("#materialRangeWarning").isVisible(),
       "A result outside the selected material range must display a prominent warning");
     assert.match(await page.locator("#materialRangeWarning").textContent(), /常物性外推/);
@@ -79,10 +79,13 @@ try {
         || first.right <= second.left || second.right <= first.left;
     });
     assert(toolbarsDoNotOverlap, "Viewport controls and visualization modes must not overlap");
+    await page.locator("#timePosition").fill("200");
+    await page.waitForFunction(expected => Number(document.querySelector("#workpieceCanvas").dataset.fieldTime) === expected,
+      seededTimes[200]);
     const before = await page.locator("#workpieceCanvas").evaluate(canvas => canvas.toDataURL());
     await page.locator("#timePosition").fill("0");
     await page.waitForFunction(() => document.querySelector("#timeLabel").textContent === "0 s");
-    await page.waitForFunction(() => Number(document.querySelector("#resultMax").textContent.replaceAll(",", "")) === 480);
+    await page.waitForFunction(() => Number(document.querySelector("#resultMax").textContent.replaceAll(",", "")) === 206.85);
     await page.waitForFunction(() => document.querySelector("#workpieceCanvas").dataset.fieldTime === "0");
     const after = await page.locator("#workpieceCanvas").evaluate(canvas => canvas.toDataURL());
     assert.notEqual(before, after, "Selecting a real time step must change the rendered field");
@@ -137,6 +140,7 @@ try {
         "Absolute-temperature legend values must stay fixed during playback");
       await page.locator("#diffusionViewButton").click();
       await page.waitForFunction(() => document.querySelector("#diffusionViewButton").getAttribute("aria-pressed") === "true");
+      assert.match(await page.locator("#diffusionReference").textContent(), /仅显示温差，不是绝对温度/);
       page.off("request", recordModeRequest);
       assert.deepEqual(modeRequests, [], "Switching derived and absolute temperature modes must stay local");
     }
@@ -267,12 +271,16 @@ try {
     await page.locator("#meshNav").click();
     await page.locator("#acceptMeshWarnings").check();
     await page.locator("#primaryAction").click();
-    await page.waitForFunction(() => document.querySelector("#primaryAction").textContent === "开始求解");
-    await page.locator("#primaryAction").click();
   }
   await page.locator("#timeControls").waitFor({ state: "visible", timeout: 60_000 });
   const completed = await (await page.request.get(`${url}/v1/studies/${task.study_id}`)).json();
   assert.equal(completed.status, "succeeded");
+  await page.setViewportSize({width: 1006, height: 883});
+  await page.locator('.inspector-content').evaluate(element => { element.scrollTop = 0; });
+  assert(await page.evaluate(() => document.querySelector('#resultMin').getBoundingClientRect().bottom
+    <= document.querySelector('.inspector-content').getBoundingClientRect().bottom),
+  'Completed task status must not push the actual temperature summary below the inspector viewport');
+  await page.setViewportSize({width: 1440, height: 900});
   const result = await (await page.request.get(`${url}/v1/studies/${task.study_id}/result`)).json();
   assert(result.time_steps.length > 1, "A copied source change must preserve transient analysis");
   const baseline = await (await page.request.get(`${url}/v1/studies/${fixture.study_id}`)).json();
@@ -326,13 +334,13 @@ try {
   await page.locator("#fixedBoundaryRows select").first().selectOption(saved.region_id);
   await page.locator("#fixedBoundaryRows input").first().fill("310");
   await page.locator("#fixedBoundaryRows button").last().click();
-  await page.locator("#solveNav").click();
+  await page.locator("#scenarioNav").click();
   await page.locator("#confirmInputs").check();
-  assert(await page.locator("#primaryAction").isDisabled(),
-    "Global input confirmation must not bypass material review");
-  await page.locator("#materialsNav").click();
+  await page.locator("#primaryAction").click();
+  assert(await page.locator("#materialsPanel").isVisible(),
+    "Missing material review must navigate to materials instead of bypassing review");
   await page.locator("#confirmMaterials").check();
-  await page.locator("#solveNav").click();
+  await page.locator("#scenarioNav").click();
   assert(!(await page.locator("#primaryAction").isDisabled()),
     "Explicit material review and global confirmation must enable confirmation");
   await page.locator("#primaryAction").click();
@@ -420,23 +428,21 @@ try {
   await radiationRow.locator('[data-property="emissivity_source"]').fill("Browser verification reference");
   await page.locator("#materialsNav").click();
   await page.locator("#confirmMaterials").check();
-  await page.locator("#solveNav").click();
+  await page.locator("#scenarioNav").click();
   await page.locator("#confirmInputs").check();
   await page.locator("#primaryAction").click();
-  await page.waitForFunction(() => document.querySelector("#primaryAction").textContent === "生成网格");
+  await page.waitForFunction(() => document.querySelector("#draftState").textContent === "已确认");
   const exchange = await (await page.request.get(`${url}/v1/studies/${exchangeDraft.study_id}`)).json();
   assert.equal(exchange.plan.heat_source_enabled, false);
   assert.equal(exchange.plan.global_convection_enabled, false);
   assert.equal(exchange.plan.boundaries.length, 0);
   assert.equal(exchange.plan.surface_conditions.length, 2);
-  await page.locator("#primaryAction").click();
   await page.locator("#acceptMeshWarnings").waitFor({ state: "visible", timeout: 60_000 });
   await page.locator("#acceptMeshWarnings").check();
   await page.locator("#primaryAction").click();
-  await page.waitForFunction(() => document.querySelector("#primaryAction").textContent === "开始求解");
-  await page.locator("#primaryAction").click();
   await page.locator("#boundaryPowerBalance").waitFor({ state: "visible", timeout: 60_000 });
-  await page.waitForFunction(() => Number(document.querySelector("#resultMax").textContent.replaceAll(",", "")) > 420);
+  await page.locator("#timePosition").fill("200");
+  await page.waitForFunction(() => Number(document.querySelector("#resultMax").textContent.replaceAll(",", "")) > 146.85);
   assert((await page.locator("#boundaryPowerBalance").textContent()).includes("辐射净输入"));
   await page.screenshot({ path: "docs/verification/regional-radiation-result.png", fullPage: true });
 
@@ -504,6 +510,7 @@ try {
   assert.equal(boxTask.operation, "apply_and_solve");
   assert.notEqual(boxTask.study_id, sourceFree.study_id);
   assert.deepEqual(errors, []);
+  console.log("All browser workflow checks passed: playback, fixed scale, layouts, materials, sources, review and solve.");
 } finally {
   if (browser) await browser.close();
   server.kill("SIGTERM");

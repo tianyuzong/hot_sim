@@ -29,6 +29,7 @@ from .models import (
     MeshReviewRequest,
     ModelingDecisionRequest,
     ModelingMessageRequest,
+    PolicyReport,
     ProjectCreateRequest,
     ProjectRecord,
     ProjectUpdateRequest,
@@ -50,6 +51,7 @@ from .models import (
     WorkpieceUnitConfirmation,
 )
 from .planner import PlannerUnavailableError, SimulationPlanner, build_planner
+from .policy import validate_plan
 from .regions import SurfaceRegionRequest, create_surface_region
 from .service import StudyService
 from .settings import Settings
@@ -668,6 +670,7 @@ def create_app(
                 request.overrides,
                 request.purpose,
                 request.require_confirmation,
+                planning_mode=request.planning_mode,
             )
         except RecordNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -830,6 +833,22 @@ def create_app(
     def get_study(study_id: str) -> StudyRecord:
         try:
             return repository.get_study(study_id)
+        except (RecordNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/v1/studies/{study_id}/validation", response_model=PolicyReport, tags=["仿真研究"],
+             summary="只读检查当前参数与修改建议")
+    def get_study_validation(study_id: str, expected_revision: int | None = None) -> PolicyReport:
+        try:
+            study = repository.get_study(study_id)
+            if expected_revision is not None and expected_revision != study.draft_revision:
+                raise HTTPException(status_code=409, detail=(
+                    f"草案版本已变化：页面为第 {expected_revision} 版，服务器为第 {study.draft_revision} 版。"
+                    "请先检查未保存修改，再刷新数据后重试。"
+                ))
+            if study.plan is None:
+                return PolicyReport(accepted=False, errors=["尚未生成仿真方案，请先确认几何尺度并建立草案。"])
+            return validate_plan(repository.get_workpiece(study.workpiece_id), study.plan)
         except (RecordNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

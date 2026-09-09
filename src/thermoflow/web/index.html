@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#171a1d" />
     <meta name="description" content="ThermoFlow 热仿真工作台与智能工程仿真平台" />
     <title>ThermoFlow 智能工程仿真平台</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260909-3" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260909-validation1" />
   </head>
   <body>
     <div class="app-shell">
@@ -27,6 +27,7 @@
         </div>
 
         <nav class="top-actions" aria-label="工具">
+          <a class="docs-link" id="helpLink" href="/assets/help.html" target="_blank" rel="noopener">使用说明</a>
           <button class="icon-button" id="refreshButton" type="button" title="刷新数据" aria-label="刷新数据">
             <span aria-hidden="true">↻</span>
           </button>
@@ -104,8 +105,8 @@
             <div class="visualization-modes" id="visualizationModes" role="group" aria-label="可视化模式" hidden>
               <button id="modelViewButton" type="button" aria-pressed="false">模型</button>
               <button id="meshViewButton" type="button" aria-pressed="false" hidden>网格</button>
-              <button id="diffusionViewButton" type="button" aria-pressed="false" hidden>热扩散</button>
-              <button id="thermalViewButton" type="button" aria-pressed="true">绝对温度</button>
+              <button id="diffusionViewButton" type="button" aria-pressed="false" hidden title="仅比较本帧各处的温差，不能用来判断工件是否升温">空间温差</button>
+              <button id="thermalViewButton" type="button" aria-pressed="true">真实温度</button>
               <button id="heatFluxViewButton" type="button" aria-pressed="false">热流</button>
               <button id="contourViewButton" type="button" aria-pressed="false">等值带</button>
               <button id="sliceViewButton" type="button" aria-pressed="false">剖面</button>
@@ -375,6 +376,7 @@
                   <button class="secondary-button" id="materialsGoScenario" type="button">去工况填写用途</button>
                 </div>
                 <div class="component-materials" id="componentMaterialList"></div>
+                <button class="primary-button" id="editMaterialsButton" type="button" hidden>修改材料与物性（保留原结果）</button>
                 <div class="notice notice-warning" id="materialConfirmationNotice" hidden>
                   正式求解前必须逐组件核对材料及热物性。规划器给出的材料只是候选值，不代表已经得到用户确认。
                 </div>
@@ -393,16 +395,21 @@
 
               <section class="task-panel" id="scenarioPanel" hidden>
                 <div class="inspector-title">
-                  <div><span class="eyebrow">自然语言建模</span><h2>用途与工况</h2></div>
+                  <div><span class="eyebrow">仿真设置</span><h2>热源与时长</h2></div>
                   <span class="confidence" id="draftState">待描述</span>
                 </div>
+                <details><summary>可选：用 AI 描述工况</summary>
                 <form class="scenario-form" id="studyDraftForm">
                   <label class="wide-field"><span>工件用途、环境和需要验证的问题</span>
                     <textarea id="studyPurpose" rows="5" maxlength="1000" placeholder="例如：这是一个 6061 铝合金散热件，环境 25 ℃，内部热源 40 W，希望最高温度不超过 80 ℃。" required></textarea>
                   </label>
                   <button class="primary-button" id="generateDraftButton" type="submit">生成仿真草案</button>
                 </form>
+                </details>
+                <button class="primary-button" id="manualDraftButton" type="button">直接设置材料与热源（无需 AI）</button>
+                <button class="primary-button" id="editParametersButton" type="button" hidden>修改参数（保留原结果）</button>
                 <form class="structured-form" id="structuredInputs" hidden>
+                  <p class="editor-hint">温度输入单位为 K：20 ℃ = 293.15 K。结果色标使用 ℃。瞬态从初始温度开始，热源持续加热；未添加定温边界时没有固定冷热端。</p>
                   <div class="form-grid">
                     <label class="wide-field"><span>分析类型</span><select id="draftAnalysisType"><option value="steady_state_conduction">稳态导热</option><option value="transient_conduction">瞬态导热</option></select></label>
                     <label data-transient-field hidden><span>初始温度 <i>K</i></span><input id="draftInitialTemperature" type="number" min="1" max="5000" step="any" /></label>
@@ -437,6 +444,7 @@
                     <div id="thermalContactRows"></div>
                   </div>
                 </form>
+                <label class="confirmation-check" id="confirmationCheck"><input id="confirmInputs" type="checkbox" /> 我已检查材料、热源、初始温度、散热条件与网格设置</label>
                 <section class="review-list" id="missingInformation" hidden><h3>待确认信息</h3><ul></ul></section>
                 <section class="review-list review-danger" id="unsupportedPhysics" hidden><h3>当前模型范围</h3><ul></ul></section>
               </section>
@@ -447,7 +455,7 @@
                   <span class="confidence" id="meshRisk">待生成</span>
                 </div>
                 <div class="mesh-preview" id="meshPreview">
-                  <div><span>目标单元尺寸</span><input id="draftMeshSize" type="number" min="0.000001" step="any" disabled /><i>mm</i></div>
+                  <div><span>目标单元尺寸</span><input id="draftMeshSize" aria-label="目标单元尺寸 mm" type="number" min="0.000001" step="any" disabled /><i>mm</i></div>
                   <div><span>有效单元尺寸</span><strong id="effectiveMeshSize">—</strong><i>mm</i></div>
                   <div><span id="meshCellCountLabel">预计单元数</span><strong id="estimatedCells">—</strong></div>
                   <div><span id="meshPointCountLabel">预计网格点</span><strong id="estimatedPoints">—</strong></div>
@@ -496,7 +504,6 @@
                   <h3>建模假设</h3>
                   <ul id="planAssumptions"></ul>
                 </section>
-                <label class="confirmation-check" id="confirmationCheck"><input id="confirmInputs" type="checkbox" /> 我已检查材料、工况、边界条件、网格与判据</label>
               </div>
               </section>
             </section>
@@ -516,8 +523,8 @@
                 </div>
                 <div class="notice notice-warning material-range-warning" id="materialRangeWarning" role="alert" hidden></div>
                 <div class="metric-grid">
-                  <div><span>当前帧最低温度</span><strong id="resultMin">—</strong><small>K</small></div>
-                  <div><span>当前帧最高温度</span><strong id="resultMax">—</strong><small>K</small></div>
+                  <div><span>当前帧最低温度</span><strong id="resultMin">—</strong><small>℃</small></div>
+                  <div><span>当前帧最高温度</span><strong id="resultMax">—</strong><small>℃</small></div>
                   <div><span>施加输入功率</span><strong id="resultHeatRate">—</strong><small>W</small></div>
                   <div><span id="resultResistanceLabel">热阻</span><strong id="resultResistance">—</strong><small>K/W</small></div>
                 </div>
@@ -653,6 +660,15 @@
             </section>
           </div>
 
+          <div class="validation-feedback" id="validationFeedback" role="region" aria-label="参数检查" hidden>
+            <header><strong>参数检查</strong><a href="/assets/help.html#troubleshooting" target="_blank" rel="noopener">如何修改？</a></header>
+            <p id="validationSummary" role="status"></p>
+            <div class="validation-list" id="validationErrors"></div>
+            <details id="validationWarnings" hidden>
+              <summary id="validationWarningCount">需要核对的风险</summary>
+              <div class="validation-list" id="validationWarningList"></div>
+            </details>
+          </div>
           <details class="modeling-drawer" id="modelingDrawer" hidden>
             <summary>建模对话 <span id="draftSaveStatus" role="status">草案已保存</span></summary>
             <div class="modeling-body">
@@ -713,7 +729,7 @@
         </label>
 
         <div class="segmented-control parameter-mode" role="tablist" aria-label="参数模式">
-          <button class="segment is-active" id="autoModeButton" type="button" role="tab" aria-selected="true">全部自动补齐</button>
+          <button class="segment is-active" id="autoModeButton" type="button" role="tab" aria-selected="true">先导入，随后设置</button>
           <button class="segment" id="customModeButton" type="button" role="tab" aria-selected="false">我来指定参数</button>
         </div>
 
@@ -941,7 +957,8 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="/assets/source-editor-model.js?v=20260908-3" defer></script>
-    <script src="/assets/transient-display.js?v=20260909-1" defer></script>
-    <script src="/assets/app.js?v=20260909-5" defer></script>
+    <script src="/assets/transient-display.js?v=20260909-flow1" defer></script>
+    <script src="/assets/validation-feedback.js?v=20260909-1" defer></script>
+    <script src="/assets/app.js?v=20260909-validation1" defer></script>
   </body>
 </html>

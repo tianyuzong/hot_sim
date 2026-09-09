@@ -110,7 +110,7 @@ def test_new_optional_fields_preserve_legacy_steady_fingerprints(tmp_path):
     assert simulation_spec_sha256(study.simulation_spec) == digest(spec)
 
 
-def test_transient_confirmation_fields_and_full_numeric_frames(tmp_path):
+def test_transient_confirmation_fields_and_full_numeric_frames(tmp_path, monkeypatch):
     client = _client(tmp_path)
     part = client.post("/v1/workpieces/files", files={
         "file": ("cooling-block.stl", trimesh.creation.box(extents=[10, 6, 4]).export(file_type="stl"), "model/stl"),
@@ -159,10 +159,22 @@ def test_transient_confirmation_fields_and_full_numeric_frames(tmp_path):
     assert result["temperature_max_k"] < 400
     assert result["evaluation_status"] == "violates_criteria"
     assert result["maximum_energy_balance_error_over_time"] < 1e-5
-    playback_response = client.get(prefix + "/playback")
+    from thermoflow import visualization
+    original_read = visualization.read_solver_vtk
+    vtk_reads = []
+    def count_read(path):
+        vtk_reads.append(path)
+        return original_read(path)
+    with monkeypatch.context() as patch:
+        patch.setattr(visualization, "read_solver_vtk", count_read)
+        playback_response = client.get(prefix + "/playback")
+    assert len(vtk_reads) == 1, "Playback must read topology once and load verified compact frame arrays"
     assert playback_response.status_code == 200, playback_response.text
     assert playback_response.headers["content-encoding"] == "gzip"
     playback = playback_response.json()
+    assert len(playback["vertices"]) == len({tuple(v) for v in playback["vertices"]}), (
+        "Playback must share exterior nodes rather than retaining four copies per voxel face"
+    )
     assert playback["study_id"] == study["study_id"]
     assert len(playback["frames"]) == len(result["time_steps"])
     assert playback["frames"][0]["index"] == 0
@@ -172,6 +184,12 @@ def test_transient_confirmation_fields_and_full_numeric_frames(tmp_path):
     assert "vertices" not in playback["frames"][0]
     assert "triangles" not in playback["frames"][0]
     assert [frame["time_s"] for frame in playback["frames"]] == pytest.approx(times)
+    # Shared topology must not change the actual reconstructed surface temperatures.
+    for index in (0, 100, 200):
+        surface = client.post(prefix + "/view", json={"frame_index": index}).json()
+        original = {tuple(v): t for v, t in zip(surface["vertices"], surface["temperature_k"], strict=True)}
+        for vertex, temperature in zip(playback["vertices"], playback["frames"][index]["temperature_k"], strict=True):
+            assert temperature == pytest.approx(original[tuple(vertex)], rel=0, abs=1e-8)
     for index, step in enumerate(result["time_steps"]):
         frame = client.get(prefix + f"/frames/{index}")
         assert frame.status_code == 200
@@ -185,6 +203,11 @@ def test_transient_confirmation_fields_and_full_numeric_frames(tmp_path):
         assert hashlib.sha256(vtk).hexdigest() == artifact["sha256"]
     assert client.get(prefix + "/frames/-1").status_code == 404
     assert client.get(prefix + "/frames/1000").status_code == 404
+    corrupt_array = tmp_path / "data" / "studies" / study["study_id"] / "artifacts" / "thermal-0200.npz"
+    corrupt_array.write_bytes(b"invalid frame")
+    damaged_playback = client.get(prefix + "/playback")
+    assert damaged_playback.status_code == 409
+    assert "校验失败" in damaged_playback.json()["detail"]
     corrupted = tmp_path / "data" / "studies" / study["study_id"] / "artifacts" / "thermal-0000.json"
     corrupted.write_text("{}")
     assert client.get(prefix + "/frames/0").status_code == 409

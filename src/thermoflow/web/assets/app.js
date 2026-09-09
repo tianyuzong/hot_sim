@@ -269,6 +269,9 @@ const elements = Object.fromEntries(
     "geometryLimitations",
     "materialsEmpty",
     "materialsCreateDraftButton",
+    "editMaterialsButton",
+    "editParametersButton",
+    "manualDraftButton",
     "materialsGoScenario",
     "componentMaterialList",
     "materialConfirmationNotice",
@@ -438,6 +441,173 @@ elements.sourceEditorSlot.append(elements.sourceEditor);
 let toastTimer = null;
 let engineeringViewport = null;
 let probeRequestTicket = 0;
+let validationFeedback = null;
+
+function validationFields() {
+  const fields = new Map();
+  const add = (path, node, tab = 'scenario', activate = null) => {
+    if (node || activate) fields.set(path, {node, tab, activate});
+  };
+  for (const [path, id] of Object.entries({
+    analysis_type: 'draftAnalysisType', analyses: 'draftAnalysisType',
+    initial_temperature_k: 'draftInitialTemperature', duration_s: 'draftDuration', time_step_s: 'draftTimeStep',
+    'heat_source.total_power_w': 'draftSourcePower', 'heat_source.radius_mm': 'draftSourceRadius',
+    'convection.ambient_temperature_k': 'draftAmbient',
+    'convection.heat_transfer_coefficient_w_m2_k': 'draftConvection',
+  })) add(path, elements[id]);
+  add('mesh.target_element_size_mm', elements.draftMeshSize, 'mesh');
+  add('length_unit', elements.lengthUnit, 'geometry');
+  [...elements.fixedBoundaryRows.children].forEach((row, index) => {
+    add(`boundaries.${index}.selector`, row.querySelector('select'));
+    add(`boundaries.${index}.region_id`, row.querySelector('select'));
+    add(`boundaries.${index}.temperature_k`, row.querySelector('input'));
+  });
+  if (selectedWorkpiece()?.cad_format !== 'stl') {
+    (selectedStudy()?.plan?.boundaries || []).forEach((boundary, index) => {
+      add(`boundaries.${index}.selector`, elements.draftHeatAxis);
+      add(`boundaries.${index}.temperature_k`, boundary.selector?.endsWith('min')
+        ? elements.draftMinTemperature : elements.draftMaxTemperature);
+    });
+  }
+  [...elements.surfaceConditionRows.children].forEach((row, index) => {
+    add(`surface_conditions.${index}.region_id`, row.querySelector('.region-target'));
+    add(`surface_conditions.${index}.kind`, row.querySelector('.condition-kind'));
+    row.querySelectorAll('[data-property]').forEach(node => add(`surface_conditions.${index}.${node.dataset.property}`, node));
+  });
+  [...elements.thermalContactRows.children].forEach((row, index) => {
+    for (const [property, selector] of Object.entries({
+      source_component_id: '.source-component', target_component_id: '.target-component',
+      source_region_id: '.source-region', target_region_id: '.target-region',
+      contact_resistance_m2_k_w: '.contact-resistance', contact_area_m2: '.contact-area', max_gap_mm: '.contact-gap',
+    })) add(`contacts.${index}.${property}`, row.querySelector(selector));
+  });
+  (selectedStudy()?.plan?.criteria || []).forEach((criterion, index) => {
+    if (criterion.metric !== 'max_temperature') return;
+    add(`criteria.${index}.target.value`, elements.draftCriterionMax);
+    add(`criteria.${index}.target.unit`, elements.draftCriterionMax);
+  });
+  [...elements.componentMaterialList.children].forEach((row, index) => {
+    add(`component_materials.${index}.material_id`, row.querySelector('select'), 'materials');
+    row.querySelectorAll('[data-material-property]').forEach(node => {
+      add(`component_materials.${index}.material.${node.dataset.materialProperty}`, node, 'materials');
+      if (index === 0) add(`material.${node.dataset.materialProperty}`, node, 'materials');
+    });
+  });
+  const sourceFields = {
+    shape: 'canvasSourceShape', center_mm: 'canvasSourceX', end_mm: 'canvasSourceEndX',
+    'center_mm.x': 'canvasSourceX', 'center_mm.y': 'canvasSourceY', 'center_mm.z': 'canvasSourceZ',
+    'end_mm.x': 'canvasSourceEndX', 'end_mm.y': 'canvasSourceEndY', 'end_mm.z': 'canvasSourceEndZ',
+    total_power_w: 'canvasSourcePower', radius_mm: 'canvasSourceRadius',
+    surface_normal_axis: 'canvasSourceSurfaceAxis', surface_width_mm: 'canvasSourceWidth',
+    surface_height_mm: 'canvasSourceHeight', surface_thickness_mm: 'canvasSourceThickness',
+    volume_width_mm: 'canvasSourceVolumeWidth', volume_height_mm: 'canvasSourceVolumeHeight',
+    volume_depth_mm: 'canvasSourceVolumeDepth', embedding_depth_mm: 'canvasSourceDepth',
+  };
+  ThermoFlowSources.sourcesFromPlan(selectedStudy()?.plan).forEach((source, index) => {
+    for (const [property, id] of Object.entries(sourceFields)) {
+      add(`heat_sources.${index}.${property}`, activeSourceCollection()?.activeIndex === index ? elements[id] : null,
+        'scenario', () => {
+          activeSourceCollection(true);
+          selectHeatSource(index, {openEditor: true});
+          return elements[id];
+        });
+      if (index === 0 && !fields.has(`heat_source.${property}`)) {
+        fields.set(`heat_source.${property}`, fields.get(`heat_sources.${index}.${property}`));
+      }
+    }
+  });
+  return fields;
+}
+
+function locateValidationFields(paths) {
+  const fields = validationFields();
+  const target = paths.map(path => fields.get(path)).find(Boolean);
+  if (!target) {
+    switchTab('scenario');
+    document.getElementById('validationFeedback').scrollIntoView({block: 'nearest'});
+    return;
+  }
+  switchTab(target.tab);
+  const node = target.activate ? target.activate() : target.node;
+  renderValidationFeedback();
+  if (node) {
+    node.scrollIntoView({block: 'center', behavior: 'instant'});
+    node.focus({preventScroll: true});
+  }
+}
+
+function renderValidationFeedback() {
+  const root = document.getElementById('validationFeedback');
+  if (!validationFeedback) validationFeedback = new ThermoFlowValidation.Feedback(root, locateValidationFields);
+  const study = selectedStudy();
+  const failure = state.validationFailure?.studyId === study?.study_id ? state.validationFailure.message : '';
+  const fields = validationFields();
+  const inputIssues = [];
+  const inspected = new Set();
+  if (study?.plan && study.confirmation?.status !== 'confirmed') for (const [path, {node}] of fields) {
+    if (!node || inspected.has(node) || node.disabled || node.closest('label')?.hidden
+      || node.closest('#sourceEditor')?.hidden || !node.willValidate) continue;
+    inspected.add(node);
+    if (node.checkValidity()) continue;
+    const label = node.closest('label');
+    const name = [...(label?.childNodes || [])]
+      .filter(child => child.nodeType === 3 || child.tagName === 'SPAN').map(child => child.textContent).join('').trim() || path;
+    const prefix = path.startsWith('boundaries.') ? `定温边界第 ${Number(path.split('.')[1]) + 1} 行 · ` : '';
+    const reason = node.validity.valueMissing ? '这是必填项，当前未填写'
+      : node.validity.badInput ? '请输入有效数字'
+      : node.validity.rangeUnderflow ? `当前 ${node.value}，不能小于 ${node.min}`
+      : node.validity.rangeOverflow ? `当前 ${node.value}，不能大于 ${node.max}` : '格式不符合要求';
+    inputIssues.push({severity: 'error', message: `${prefix}${name}：${reason}。`,
+      suggestion: path.endsWith('temperature_k') ? '请填写有效的 K 温度；20 ℃ 应填写 293.15 K。' : '请填写符合范围的有效参数。',
+      fields: [path]});
+  }
+  const checking = state.validationPending?.studyId === study?.study_id
+    && state.validationPending?.revision === study?.draft_revision;
+  const issues = validationFeedback.render(study, {pending: state.draftDirty || checking, failure, fields, inputIssues});
+  // Make Kelvin inputs legible without changing their stored unit or value.
+  for (const [path, {node}] of fields) {
+    if (!node || !path.endsWith('_temperature_k') && !path.endsWith('.temperature_k')) continue;
+    const label = node.closest('label');
+    if (!label) continue;
+    let equivalent = label.querySelector('.temperature-equivalent');
+    if (!equivalent) {
+      equivalent = createElement('small', 'temperature-equivalent');
+      label.append(equivalent);
+    }
+    equivalent.textContent = node.value !== '' && Number.isFinite(Number(node.value))
+      ? `相当于 ${formatNumber(Number(node.value) - 273.15)} ℃` : '';
+  }
+  return issues;
+}
+
+async function loadSelectedValidation() {
+  const study = selectedStudy();
+  if (!study?.plan || study.confirmation?.status === 'confirmed') return false;
+  const revision = study.draft_revision;
+  const pending = {studyId: study.study_id, revision};
+  state.validationPending = pending;
+  const isCurrent = () => state.validationPending === pending
+    && selectedStudy()?.study_id === study.study_id
+    && selectedStudy()?.draft_revision === revision && !state.draftDirty;
+  renderValidationFeedback();
+  try {
+    const policy = await request(`/v1/studies/${study.study_id}/validation?expected_revision=${revision}`);
+    if (!isCurrent()) return false;
+    selectedStudy().policy = policy;
+    state.validationFailure = null;
+    return true;
+  } catch (error) {
+    if (isCurrent()) {
+      state.validationFailure = {studyId: study.study_id, message: `参数检查读取失败：${error.message}`};
+    }
+    return false;
+  } finally {
+    if (state.validationPending === pending) {
+      state.validationPending = null;
+      renderValidationFeedback();
+    }
+  }
+}
 
 async function request(path, options = {}) {
   const response = await fetch(path, options);
@@ -502,7 +672,9 @@ async function loadWorkspace({ preserveSelection = true } = {}) {
         ?.workpiece_id || projectWorkpieces[0]?.workpiece_id || null;
     selectLatestStudy(previousStudy);
     persistWorkspaceState();
-    await Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun()]);
+    const selectedData = Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun(), loadSelectedValidation()]);
+    render();
+    await selectedData;
     render();
     startHeatAnimation();
     scheduleTaskPoll();
@@ -528,7 +700,7 @@ function renderUploadMaterialOptions() {
   if (state.materials.some((entry) => entry.material.name === current)) select.value = current;
 }
 
-function selectLatestStudy(preferredId = null, workpieceId = null) {
+function selectLatestStudy(preferredId = null, workpieceId = state.selectedWorkpieceId) {
   const relevant = selectedProjectStudies().filter(
     (item) => workpieceId === null || item.workpiece_id === workpieceId,
   );
@@ -560,7 +732,7 @@ async function loadSelectedResult() {
     const result = await request(`/v1/studies/${study.study_id}/result`);
     if (selectedStudy()?.study_id !== study.study_id) return;
     state.result = result;
-    state.timeIndex = Math.max(0, (state.result.time_steps?.length || 1) - 1);
+    state.timeIndex = 0;
     renderTimeControls();
     if (result.time_steps?.length) {
       state.timeLoading = true;
@@ -604,11 +776,8 @@ async function loadSelectedResult() {
         });
       }
       state.diffusionScale = ThermoFlowTransient.diffusionScale(playback.frames);
-      if (state.diffusionDefaultedStudyId !== study.study_id) {
-        state.visualizationMode = "diffusion";
-        state.diffusionDefaultedStudyId = study.study_id;
-        persistWorkspaceState();
-      }
+      state.visualizationMode = "thermal";
+      persistWorkspaceState();
       state.playbackStudyId = study.study_id;
       state.timeLoading = false;
       await selectTimeStep(state.timeIndex);
@@ -1024,7 +1193,9 @@ async function selectWorkpiece(workpieceId) {
   resetStlView(false);
   selectLatestStudy(null, workpieceId);
   persistWorkspaceState();
-  await Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun()]);
+  const selectedData = Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun(), loadSelectedValidation()]);
+  render();
+  await selectedData;
   render();
   startHeatAnimation();
 }
@@ -1044,7 +1215,9 @@ async function selectProject(projectId) {
   resetStlView(false);
   selectLatestStudy();
   persistWorkspaceState();
-  await Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun()]);
+  const selectedData = Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun(), loadSelectedValidation()]);
+  render();
+  await selectedData;
   render();
   startHeatAnimation();
 }
@@ -1241,7 +1414,9 @@ async function selectStudy(studyId, options = {}) {
   if (options.visualizationMode) state.visualizationMode = options.visualizationMode;
   persistWorkspaceState();
   discardSourceDraft();
-  await Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun()]);
+  const selectedData = Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun(), loadSelectedValidation()]);
+  render();
+  await selectedData;
   render();
   startHeatAnimation();
   if (options.announce) {
@@ -1260,10 +1435,11 @@ function renderInspector() {
   renderEvaluation();
   elements.planEmpty.hidden = Boolean(plan);
   elements.planContent.hidden = !plan;
+  elements.confirmationCheck.hidden = !plan;
 
   if (plan) {
     elements.planName.textContent = plan.study_name;
-    elements.planConfidence.textContent = study.overrides
+    elements.planConfidence.textContent = study.planner?.provider === "manual-template" ? "手动参数" : study.overrides
       ? `用户参数 · ${Math.round(plan.confidence * 100)}%`
       : `置信度 ${Math.round(plan.confidence * 100)}%`;
     elements.planMaterial.textContent = plan.material.name;
@@ -1776,10 +1952,18 @@ elements.materialsCreateDraftButton.addEventListener("click", async () => {
   const study = await createStudy(
     workpiece.workpiece_id,
     "请生成可编辑的热传导仿真草案，随后由用户手动确认材料、热源和边界条件",
+    null, "manual",
   );
   if (study?.plan) switchTab("materials");
 });
 elements.materialsGoScenario.addEventListener("click", () => switchTab("scenario"));
+elements.editMaterialsButton.addEventListener("click", () => copySelectedStudy("materials"));
+elements.editParametersButton.addEventListener("click", () => copySelectedStudy("scenario"));
+elements.manualDraftButton.addEventListener("click", async () => {
+  if (!selectedWorkpiece()?.unit_confirmed) return;
+  const study = await createStudy(selectedWorkpiece().workpiece_id, "手动设置瞬态导热", null, "manual");
+  if (study?.plan) switchTab("materials");
+});
 elements.openSourceEditorFromScenario.addEventListener("click", () => {
   if (!selectedStudy()?.plan) return;
   openSourceEditor();
@@ -1803,6 +1987,11 @@ function renderMaterialsPanel() {
   const plan = study?.plan;
   const renderKey = `${study?.study_id}:${study?.confirmation?.status}`;
   const confirmed = study?.confirmation?.status === "confirmed";
+  elements.editMaterialsButton.hidden = !confirmed;
+  elements.editMaterialsButton.disabled = state.busy || Boolean(activeStudyTask());
+  elements.editParametersButton.hidden = !confirmed;
+  elements.editParametersButton.disabled = state.busy || Boolean(activeStudyTask());
+  elements.manualDraftButton.hidden = Boolean(plan);
   const materialsConfirmed = Boolean(plan) && (
     confirmed || state.materialsConfirmedFor === study?.study_id
   );
@@ -1844,6 +2033,9 @@ function renderMaterialsPanel() {
       option.value = entry.material_id;
       select.append(option);
     });
+    const customOption = createElement("option", "", "自定义物性（下方填写）");
+    customOption.value = "custom";
+    select.append(customOption);
     const selectedCatalog = state.materials.find(
       (entry) => entry.material_id === assignment?.material_id,
     );
@@ -1893,6 +2085,12 @@ function renderMaterialsPanel() {
     select.addEventListener("change", () => {
       const entry = state.materials.find((item) => item.material_id === select.value);
       if (entry) syncRow(entry.material, entry.material_id);
+      else if (select.value === "custom") syncRow({
+        ...materialAssignmentFromRow(row).material,
+        name: "自定义材料", source_type: "user", source_basis: "用户手动输入的热物性。",
+        source_reference: null, source_version: null, source_citation: null,
+        valid_temperature_min_k: null, valid_temperature_max_k: null,
+      }, null);
     });
     fields.addEventListener("input", () => {
       const current = materialAssignmentFromRow(row);
@@ -2207,6 +2405,8 @@ function displayedTimeResult(result) {
     energy_balance_relative_error: frame.step.energy_balance_relative_error ?? 0,
     temperature_field_preview: frame.temperature_field_preview,
     heat_flux_field_preview: frame.heat_flux_field_preview,
+    heat_flux_w_m2: frame.heat_flux_field_preview?.maximum_magnitude_w_m2
+      ?? frame.surface?.heat_flux_max_w_m2 ?? null,
   };
 }
 
@@ -2324,13 +2524,16 @@ function renderResult(result) {
   elements.resultAnalysisLabel.textContent = result.time_steps?.length ? "瞬态导热" : "稳态导热";
   renderTimeControls();
   elements.resultTimePeakRow.hidden = !result.time_steps?.length;
-  elements.resultTimePeak.textContent = `${formatNumber(result.temperature_max_over_time_k)} K`;
+  elements.resultTimePeak.textContent = `${formatNumber(result.temperature_max_over_time_k - 273.15)} ℃`;
   elements.resultResistanceLabel.textContent = result.time_steps?.length ? "温升 / 功率" : "热阻";
-  elements.resultMin.textContent = formatNumber(result.temperature_min_k);
-  elements.resultMax.textContent = formatNumber(result.temperature_max_k);
+  const frameTemperatures = ThermoFlowTransient.legendValues(result.temperature_min_k, result.temperature_max_k);
+  elements.resultMin.textContent = formatNumber(frameTemperatures.values[0]);
+  elements.resultMax.textContent = formatNumber(frameTemperatures.values[2]);
   elements.resultHeatRate.textContent = formatNumber(result.heat_rate_w);
   elements.resultResistance.textContent = formatNumber(result.thermal_resistance_k_w, 4);
-  elements.resultFlux.textContent = `${formatNumber(result.heat_flux_field_preview?.maximum_magnitude_w_m2 ?? result.heat_flux_w_m2)} W/m²`;
+  const currentFlux = result.heat_flux_field_preview?.maximum_magnitude_w_m2 ?? result.heat_flux_w_m2;
+  elements.resultFlux.textContent = currentFlux == null
+    ? "切换热流视图读取当前帧" : `${formatNumber(currentFlux)} W/m²`;
   const plan = selectedStudy()?.plan;
   const componentNames = new Map(
     (selectedWorkpiece()?.components || []).map(component => [component.component_id, component.name]),
@@ -2483,7 +2686,7 @@ function formatSignedQuantity(value, unit) {
   return `${sign}${formatNumber(value)} ${unit}`;
 }
 
-async function copySelectedStudy() {
+async function copySelectedStudy(targetTab = "scenario") {
   const study = selectedStudy();
   if (!study?.plan) return;
   setBusy(true);
@@ -2496,7 +2699,7 @@ async function copySelectedStudy() {
     state.selectedProjectId = copied.project_id;
     state.selectedWorkpieceId = copied.workpiece_id;
     state.selectedStudyId = copied.study_id;
-    state.activeTab = "scenario";
+    state.activeTab = typeof targetTab === "string" ? targetTab : "scenario";
     state.draftSyncedFor = null;
     await loadWorkspace();
     showToast("研究副本已创建，请检查修改并重新确认");
@@ -2863,7 +3066,16 @@ function renderPrimaryAction() {
     return;
   }
   if (study.status === "needs_input") {
-    elements.primaryAction.textContent = "确认仿真输入";
+    if (state.activeTab === "materials") {
+      elements.primaryAction.textContent = "下一步：热源与时长";
+      elements.primaryAction.disabled = state.busy || !elements.confirmMaterials.checked;
+      return;
+    }
+    if (!elements.confirmMaterials.checked) {
+      elements.primaryAction.textContent = "先选择并确认材料";
+      return;
+    }
+    elements.primaryAction.textContent = "确认并开始仿真";
     elements.primaryAction.disabled = state.busy || state.modelingBusy || state.draftSaveError
       || Boolean(study.modeling?.proposal) || !elements.confirmMaterials.checked
       || !elements.confirmInputs.checked;
@@ -2916,6 +3128,14 @@ async function handlePrimaryAction() {
     return;
   }
   if (study.status === "needs_input") {
+    if (state.activeTab === "materials") {
+      switchTab("scenario");
+      return;
+    }
+    if (!elements.confirmMaterials.checked) {
+      switchTab("materials");
+      return;
+    }
     await confirmStudy(study.study_id);
     return;
   }
@@ -2943,7 +3163,7 @@ async function handlePrimaryAction() {
   if (study.status === "succeeded") switchTab("result");
 }
 
-async function createStudy(workpieceId, purpose = "", overrides = null) {
+async function createStudy(workpieceId, purpose = "", overrides = null, planningMode = "ai") {
   const alreadyBusy = state.busy;
   if (!alreadyBusy) setBusy(true);
   try {
@@ -2955,6 +3175,7 @@ async function createStudy(workpieceId, purpose = "", overrides = null) {
         purpose,
         overrides,
         require_confirmation: true,
+        planning_mode: planningMode,
       }),
     });
     state.selectedStudyId = study.study_id;
@@ -2990,17 +3211,17 @@ async function confirmUnit(event) {
     state.activeTab = "scenario";
     resetStlView(false);
     await loadWorkspace();
-    if (pendingUpload?.workpieceId === workpiece.workpiece_id && pendingUpload.overrides) {
+    {
       const study = await createStudy(
         workpiece.workpiece_id,
-        "用户指定的 STL 热仿真参数",
-        pendingUpload.overrides,
+        "手动设置 STL 瞬态导热",
+        pendingUpload?.workpieceId === workpiece.workpiece_id ? pendingUpload.overrides : null,
+        "manual",
       );
       if (study?.status === "needs_input") {
-        showToast("STL 尺度已确认，已载入指定参数；请继续核对材料与热源");
+        switchTab("materials");
+        showToast("尺度已确认：请选择材料，下一步设置热源与时长。手动设置不依赖 AI。");
       }
-    } else {
-      showToast("STL 尺度已确认，可以描述工况；也可以在导入时选择‘我来指定参数’");
     }
   } catch (error) {
     showToast(`尺度确认失败：${error.message}`, true);
@@ -3029,6 +3250,7 @@ function rememberModelingStudy(study, { syncFields = false, appendHistory = fals
   }
   if (state.selectedStudyId !== study.study_id) return;
   state.draftBaseRevision = study.draft_revision || 0;
+  state.validationFailure = null;
   if (syncFields) {
     state.draftDirty = false;
     state.draftSaveError = false;
@@ -3043,6 +3265,7 @@ function rememberModelingStudy(study, { syncFields = false, appendHistory = fals
 function queueDraftSave(event) {
   const study = selectedStudy();
   if (!study?.plan || study.confirmation?.status === "confirmed") return;
+  state.validationFailure = null;
   if (event?.target && elements.componentMaterialList.contains(event.target)) {
     resetMaterialConfirmation();
   }
@@ -3083,6 +3306,8 @@ async function saveStructuredDraft() {
   if (state.draftSaveError) throw new Error("草案保存存在冲突，请先检查服务器状态");
   if (!draftFieldsValid()) {
     elements.draftSaveStatus.textContent = "未保存：请补齐有效参数";
+    state.validationFailure = {studyId: study.study_id, message: '草案尚未保存：请补齐有效参数。点击确认时会定位未通过输入检查的字段。'};
+    renderValidationFeedback();
     throw new Error("请补齐有效参数后保存草案");
   }
   const editSerial = state.draftEditSerial;
@@ -3097,6 +3322,7 @@ async function saveStructuredDraft() {
       rememberModelingStudy(updated);
     } catch (error) {
       state.draftSaveError = true;
+      state.validationFailure = {studyId: study.study_id, message: `草案未保存：${error.message}`};
       renderModeling();
       showToast(`草案未保存：${error.message}`, true);
       throw error;
@@ -3115,6 +3341,7 @@ async function flushDraftBeforeNavigation() {
 }
 
 function renderModeling() {
+  renderValidationFeedback();
   const study = selectedStudy();
   elements.modelingDrawer.hidden = !study?.plan;
   if (!study?.plan) return;
@@ -3289,7 +3516,23 @@ function confirmedOverrides() {
 }
 
 async function confirmStudy(studyId) {
+  const inputConflict = renderValidationFeedback().find(issue => issue.severity === 'error');
+  if (state.draftDirty && inputConflict?.fields?.length) {
+    locateValidationFields(inputConflict.fields);
+    return;
+  }
   if (!await flushDraftBeforeNavigation()) return;
+  if (selectedStudy()?.study_id !== studyId) return;
+  const revision = selectedStudy().draft_revision;
+  if (!await loadSelectedValidation()) return;
+  if (selectedStudy()?.study_id !== studyId || selectedStudy()?.draft_revision !== revision || state.draftDirty) return;
+  const issues = renderValidationFeedback();
+  const conflict = issues.find(issue => issue.severity === 'error');
+  if (conflict) {
+    locateValidationFields(conflict.fields || []);
+    showToast('请先修改“参数检查”列出的冲突，再确认仿真。', true);
+    return;
+  }
   if (state.modelingBusy || selectedStudy()?.modeling?.proposal) {
     elements.modelingDrawer.open = true;
     showToast("请先处理建模建议，再确认输入", true);
@@ -3327,8 +3570,10 @@ async function confirmStudy(studyId) {
     });
     state.activeTab = "mesh";
     await loadWorkspace();
-    showToast("仿真输入已确认，请生成并检查网格");
+    await submitComputation(studyId, "apply_and_solve");
   } catch (error) {
+    state.validationFailure = {studyId, message: `参数确认失败：${error.message}`};
+    renderValidationFeedback();
     showToast(`参数确认失败：${error.message}`, true);
   } finally {
     setBusy(false);
@@ -3350,7 +3595,7 @@ async function confirmMeshReview(studyId) {
     state.activeTab = "mesh";
     state.visualizationMode = "mesh";
     await loadWorkspace();
-    showToast("网格质量提示已确认，可以开始求解");
+    await runStudy(studyId);
   } catch (error) {
     await loadWorkspace();
     showToast(`网格风险确认失败：${error.message}`, true);
@@ -3929,7 +4174,8 @@ async function applySourceChanges(event) {
   updateSourceDraftFromInputs();
   if (selectedStudy()?.confirmation?.status !== "confirmed") {
     if (!await flushDraftBeforeNavigation()) return;
-    switchTab("solve");
+    closeSourceEditor();
+    switchTab("scenario");
     showToast("热源已更新到草案，请检查并确认全部输入后求解");
     return;
   }
@@ -5989,7 +6235,7 @@ const showViewportStatus = (message, error = false) => {
   viewportStatus.hidden = !message;
   viewportStatus.classList.toggle("is-error", error);
 };
-import("/assets/viewport.mjs?v=20260909-1").then(({ EngineeringViewport }) => {
+import("/assets/viewport.mjs?v=20260909-flow7").then(({ EngineeringViewport }) => {
   engineeringViewport = new EngineeringViewport(elements.workpieceCanvas, {
     status: showViewportStatus,
     component: id => selectComponent(id, true),
@@ -6007,17 +6253,19 @@ import("/assets/viewport.mjs?v=20260909-1").then(({ EngineeringViewport }) => {
       elements.thermalLegend.classList.toggle("is-difference", difference);
       elements.diffusionReference.hidden = !diffusion;
       elements.diffusionReference.textContent = diffusion
-        ? `当前帧参考 Tmin = ${formatNumber(referenceTemperatureK)} K`
+        ? `仅显示温差，不是绝对温度。当前最低温度 ${formatNumber(referenceTemperatureK - 273.15)} ℃`
         : "";
       elements.thermalLegendTitle.textContent = (diffusion
-        ? `空间温差 ΔT = T − 本帧最低温度 · 全时段固定${uniform ? " · 近似等温" : ""}`
-        : difference ? "相对基准温差 · K" : flux ? "热流密度 · W/m²"
-        : locked ? (bands ? "全时段固定温度等值带 · K" : "全时段固定温标 · K")
-        : bands ? "温度等值带 · K" : "温度 · K")
+        ? `空间温差 · Δ℃ · 全时段固定${uniform ? " · 近似等温" : ""}`
+        : difference ? "相对基准温差 · Δ℃" : flux ? "热流密度 · W/m²"
+        : locked ? (bands ? "全时段固定温度等值带 · ℃" : "真实温度 · ℃ · 全时段固定")
+        : bands ? "温度等值带 · ℃" : "真实温度 · ℃")
         + (preview ? " · 近似预览" : "") + (time == null ? "" : ` · ${formatNumber(time)} s`);
+      const temperatureLegend = ThermoFlowTransient.legendValues(low, high, difference || diffusion);
       [elements.coldTemperature, elements.midTemperature, elements.hotTemperature].forEach((element, index) => {
         const value = low + (high - low) * index / 2;
-        element.textContent = flux ? formatScientific(value) : `${formatNumber(value)} K`;
+        element.textContent = flux ? formatScientific(value)
+          : `${formatNumber(temperatureLegend.values[index])} ${temperatureLegend.unit}`;
       });
     },
     sourceSelect: sourceIndex => {
