@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from .models import (
     AgentRunRecord,
+    AgentSessionRecord,
     MeshRecord,
     ProjectRecord,
     SimulationResult,
@@ -39,11 +40,13 @@ class FileRepository:
         self.workpieces = self.root / "workpieces"
         self.studies = self.root / "studies"
         self.agent_runs = self.root / "agent-runs"
+        self.agent_sessions = self.root / "agent-sessions"
         self.tasks = self.root / "tasks"
         self.projects.mkdir(parents=True, exist_ok=True)
         self.workpieces.mkdir(parents=True, exist_ok=True)
         self.studies.mkdir(parents=True, exist_ok=True)
         self.agent_runs.mkdir(parents=True, exist_ok=True)
+        self.agent_sessions.mkdir(parents=True, exist_ok=True)
         self.tasks.mkdir(parents=True, exist_ok=True)
 
     def task_dir(self, task_id: str) -> Path:
@@ -200,6 +203,27 @@ class FileRepository:
             records = [record for record in records if record.base_study_id == base_study_id]
         return sorted(records, key=lambda record: record.created_at, reverse=True)
 
+    def save_agent_session(self, record: AgentSessionRecord) -> None:
+        directory = self.agent_session_dir(record.session_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        _write_model(directory / "session.json", record)
+
+    def get_agent_session(self, session_id: str) -> AgentSessionRecord:
+        return _read_model(
+            self.agent_session_dir(session_id) / "session.json",
+            AgentSessionRecord,
+            f"未找到 Agent 会话 {session_id!r}",
+        )
+
+    def list_agent_sessions(self, project_id: str | None = None) -> list[AgentSessionRecord]:
+        records = [
+            _read_model(path, AgentSessionRecord, "未找到 Agent 会话")
+            for path in self.agent_sessions.glob("*/session.json")
+        ]
+        if project_id is not None:
+            records = [record for record in records if record.project_id == project_id]
+        return sorted(records, key=lambda record: record.updated_at, reverse=True)
+
     def project_dir(self, project_id: str) -> Path:
         return self.projects / _safe_id(project_id)
 
@@ -211,6 +235,9 @@ class FileRepository:
 
     def agent_run_dir(self, run_id: str) -> Path:
         return self.agent_runs / _safe_id(run_id)
+
+    def agent_session_dir(self, session_id: str) -> Path:
+        return self.agent_sessions / _safe_id(session_id)
 
     def delete_project_dir(self, project_id: str) -> None:
         _remove_dir(self.project_dir(project_id))

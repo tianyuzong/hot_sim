@@ -7,6 +7,7 @@ from scipy.optimize import brentq
 
 from tests.test_study_comparison import _service, _solve_stl
 from thermoflow.models import (
+    FixedTemperatureBoundary,
     LengthUnit,
     SimulationOverrides,
     StudyConfirmationRequest,
@@ -127,6 +128,28 @@ def test_overlapping_exchange_and_prescribed_cells_are_blocked(tmp_path):
     mesh = service.generate_mesh(conflicting.study_id)
     assert mesh.quality_status == "blocked"
     assert any("定温单元" in message for message in mesh.warnings)
+
+
+def test_perpendicular_exchange_face_can_touch_fixed_boundary_cells(tmp_path):
+    service, _, part, _ = _setup(tmp_path)
+    fixed = next(region for region in part.regions if region.selector == "face.xmax")
+    side = next(region for region in part.regions if region.selector == "face.ymin")
+    study = service.create_study(part.workpiece_id, overrides=SimulationOverrides(
+        fixed_boundaries=[FixedTemperatureBoundary(region_id=fixed.region_id, temperature_k=300)],
+        surface_conditions=[SurfaceConvectionBoundary(
+            region_id=side.region_id,
+            ambient_temperature_k=300,
+            heat_transfer_coefficient_w_m2_k=100,
+        )],
+        enable_heat_source=False,
+        enable_global_convection=False,
+        target_element_size_mm=1,
+    ))
+    mesh = service.generate_mesh(study.study_id)
+
+    assert mesh.quality_status != "blocked"
+    assert any(item["region_id"] == side.region_id for item in mesh.boundary_mapping)
+    assert not any("定温单元的同一外露面" in message for message in mesh.warnings)
 
 
 def test_surface_overrides_and_copy_preserve_confirmation_contract(tmp_path):

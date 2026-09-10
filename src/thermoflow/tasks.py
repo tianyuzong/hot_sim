@@ -12,6 +12,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -140,6 +141,23 @@ class TaskManager:
         self._lease = None
         self._context = multiprocessing.get_context("spawn")
         self._scheduler_error = False
+        self._completion_listeners: list[Callable[[TaskRecord], None]] = []
+
+    def add_completion_listener(self, listener: Callable[[TaskRecord], None]) -> None:
+        """Register a best-effort notification for settled background work."""
+        with self._lock:
+            self._completion_listeners.append(listener)
+
+    def _notify_completion(self, task: TaskRecord) -> None:
+        with self._lock:
+            listeners = tuple(self._completion_listeners)
+        for listener in listeners:
+            try:
+                listener(task)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Computation completion observer could not process task %s", task.task_id
+                )
 
     def start(self):
         import fcntl
@@ -294,6 +312,7 @@ class TaskManager:
             return False
 
     def _settle(self, task: TaskRecord, reason: str):
+        settled: TaskRecord | None = None
         try:
             with self.repository.study_lock(task.study_id), self.repository.task_lock(task.task_id):
                 current = self.repository.get_task(task.task_id)
@@ -322,14 +341,17 @@ class TaskManager:
                             updates.update(status=StudyStatus.READY, failure=messages[state],
                                            evaluation_status="not_evaluated", evaluation_summary=[])
                     self.repository.save_study(study.model_copy(update=updates))
-                self.repository.save_task(current.model_copy(update={
+                settled = current.model_copy(update={
                     "status": state, "stage": "finished", "progress": 100 if committed else current.progress,
                     "finished_at": _now(), "updated_at": _now(), "cancellable": False, "message": messages[state],
                     "failure_reason": None if committed or review_required else {"cancelled": "cancelled", "timed_out": "timeout", "interrupted": "worker_lost"}.get(state, current.failure_reason or "solver_error"),
-                }))
+                })
+                self.repository.save_task(settled)
         except ValueError:
             # A surviving worker owns the study lock; it must exit before recovery writes.
             return
+        if settled is not None:
+            self._notify_completion(settled)
 
     def close(self):
         self._stop.set()

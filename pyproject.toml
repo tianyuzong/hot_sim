@@ -46,7 +46,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-thermoflow = ["web/*.html", "web/assets/*", "web/assets/vendor/three/*"]
+thermoflow = ["web/*.html", "web/assets/*", "web/assets/vendor/three/*", "knowledge/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

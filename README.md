@@ -81,6 +81,10 @@ POST /v1/study-comparisons     compare 2-4 completed studies in one project
 
 POST /v1/studies/{id}/agent-runs  optional bounded optimization loop
 GET  /v1/agent-runs               list optimization records
+POST /v1/assistant-sessions       unified knowledge Q&A and modeling Agent session
+GET  /v1/assistant-sessions/{id}  restore a Q&A/modeling session
+POST /v1/assistant-sessions/{id}/turns  submit a question, description or typed answers
+POST /v1/assistant-sessions/{id}/launch confirm the summary and submit the solver task
 ```
 
 The collapsible modeling conversation stays beside the engineering canvas and

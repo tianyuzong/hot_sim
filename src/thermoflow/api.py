@@ -3,23 +3,33 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import queue
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.gzip import GZipMiddleware
 
 from .agent import SimulationAgent, build_agent_policy
+from .assistant import AssistantService, build_knowledge_provider, build_modeling_turn_provider
 from .cadflow_adapter import CadFlowGeometryInspector
 from .materials import list_materials
 from .modeling import ModelingService
 from .models import (
     AgentGoalRequest,
+    AgentLaunchRequest,
     AgentRunRecord,
+    AgentSessionCreateRequest,
+    AgentSessionRecord,
+    AgentTurnRequest,
+    AgentWorkpieceRequest,
     BoxWorkpieceInput,
     ComponentUpdateRequest,
     DraftUpdateRequest,
@@ -105,6 +115,7 @@ OPENAPI_TAGS = [
 def create_app(
     settings: Settings | None = None,
     planner: SimulationPlanner | None = None,
+    modeling_provider=None,
 ) -> FastAPI:
     resolved = settings or Settings.from_env()
     web_root = Path(__file__).resolve().parent / "web"
@@ -124,6 +135,15 @@ def create_app(
     task_manager = TaskManager(repository, compute_backend=resolved.compute_backend,
                                workers=resolved.task_workers, queue_limit=resolved.task_queue_limit,
                                timeout_seconds=resolved.task_timeout_seconds)
+    assistant = AssistantService(
+        repository=repository,
+        service=service,
+        modeling=modeling,
+        task_manager=task_manager,
+        provider=build_knowledge_provider(resolved),
+        modeling_provider=modeling_provider or build_modeling_turn_provider(resolved),
+        retain_history=resolved.retain_modeling_history,
+    )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -168,6 +188,7 @@ def create_app(
     app.state.modeling = modeling
     app.state.simulation_agent = simulation_agent
     app.state.task_manager = task_manager
+    app.state.assistant = assistant
     app.mount("/assets", StaticFiles(directory=web_root / "assets"), name="assets")
 
     @app.get("/", include_in_schema=False)
@@ -194,6 +215,172 @@ def create_app(
             "cadflow_repo_found": resolved.cadflow_repo.is_dir(),
             "compute": service.compute_runtime(),
         }
+
+    @app.post(
+        "/v1/assistant-sessions",
+        response_model=AgentSessionRecord,
+        status_code=status.HTTP_201_CREATED,
+        tags=["仿真 Agent"],
+        summary="创建统一 Agent 会话",
+        description="回答 ThermoFlow 知识问题，或从自然语言开始建立并提交热仿真研究。",
+    )
+    def create_assistant_session(request: AgentSessionCreateRequest) -> AgentSessionRecord:
+        try:
+            return assistant.create(request)
+        except RecordNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PlannerUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    def assistant_stream(operation, *args) -> StreamingResponse:
+        """Run a turn in the background and expose progress and answer deltas via SSE."""
+        def events():
+            outcome: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+            def run_operation() -> None:
+                try:
+                    outcome.put(("complete", operation(*args)))
+                except RecordNotFoundError as exc:
+                    outcome.put(("error", {"message": str(exc), "status": 404}))
+                except PlannerUnavailableError as exc:
+                    outcome.put(("error", {"message": str(exc), "status": 503}))
+                except ValueError as exc:
+                    outcome.put(("error", {"message": str(exc), "status": 409}))
+                except Exception:  # noqa: BLE001 - keep stream failures in-band for the client
+                    outcome.put(("error", {"message": "Agent 请求未完成，请稍后重试", "status": 500}))
+
+            threading.Thread(
+                target=run_operation, name="thermoflow-assistant-turn", daemon=True
+            ).start()
+            yield f"event: status\ndata: {json.dumps({'status': 'processing', 'message': '正在读取会话与当前工程…'}, ensure_ascii=False)}\n\n"
+            phase_messages = (
+                "正在读取会话与当前工程…",
+                "正在核对工件、材料和仿真草案…",
+                "正在生成可审计的 Agent 答复…",
+            )
+            phase = 0
+            while True:
+                try:
+                    kind, payload = outcome.get(timeout=0.4)
+                except queue.Empty:
+                    phase = min(phase + 1, len(phase_messages) - 1)
+                    yield (
+                        "event: status\ndata: "
+                        + json.dumps({"status": "processing", "message": phase_messages[phase]}, ensure_ascii=False)
+                        + "\n\n"
+                    )
+                    continue
+                if kind == "error":
+                    yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    return
+                session = payload
+                assert isinstance(session, AgentSessionRecord)
+                answer = session.answer or next(
+                    (item.content for item in reversed(session.messages) if item.role == "assistant"),
+                    "",
+                )
+                # The service returns a complete, audited answer. Send it in visible increments
+                # after the operation has committed so every provider follows the same contract.
+                for index in range(0, len(answer), 12):
+                    yield f"event: delta\ndata: {json.dumps({'text': answer[index:index + 12]}, ensure_ascii=False)}\n\n"
+                    time.sleep(0.004)
+                payload = session.model_dump(mode="json")
+                yield f"event: complete\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                return
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Content-Encoding": "identity",
+        })
+
+    @app.post(
+        "/v1/assistant-sessions/stream",
+        tags=["仿真 Agent"],
+        summary="流式创建 Agent 会话",
+    )
+    def create_assistant_session_stream(request: AgentSessionCreateRequest) -> StreamingResponse:
+        return assistant_stream(assistant.create, request)
+
+    @app.get(
+        "/v1/assistant-sessions",
+        response_model=list[AgentSessionRecord],
+        tags=["仿真 Agent"],
+        summary="列出 Agent 会话",
+    )
+    def list_assistant_sessions(project_id: str | None = None) -> list[AgentSessionRecord]:
+        return assistant.list(project_id)
+
+    @app.get(
+        "/v1/assistant-sessions/{session_id}",
+        response_model=AgentSessionRecord,
+        tags=["仿真 Agent"],
+        summary="恢复 Agent 会话",
+    )
+    def get_assistant_session(session_id: str) -> AgentSessionRecord:
+        try:
+            return assistant.get(session_id)
+        except RecordNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def assistant_operation(operation, *args):
+        try:
+            return operation(*args)
+        except RecordNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PlannerUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/assistant-sessions/{session_id}/workpiece",
+        response_model=AgentSessionRecord,
+        tags=["仿真 Agent"],
+        summary="绑定 Agent 工件",
+    )
+    def bind_assistant_workpiece(session_id: str, request: AgentWorkpieceRequest) -> AgentSessionRecord:
+        return assistant_operation(assistant.bind_workpiece, session_id, request)
+
+    @app.post(
+        "/v1/assistant-sessions/{session_id}/turns",
+        response_model=AgentSessionRecord,
+        tags=["仿真 Agent"],
+        summary="提交 Agent 问答或建模轮次",
+    )
+    def assistant_turn(session_id: str, request: AgentTurnRequest) -> AgentSessionRecord:
+        return assistant_operation(assistant.turn, session_id, request)
+
+    @app.post(
+        "/v1/assistant-sessions/{session_id}/turns/stream",
+        tags=["仿真 Agent"],
+        summary="流式提交 Agent 问答或建模轮次",
+    )
+    def assistant_turn_stream(session_id: str, request: AgentTurnRequest) -> StreamingResponse:
+        return assistant_stream(assistant.turn, session_id, request)
+
+    @app.post(
+        "/v1/assistant-sessions/{session_id}/undo",
+        response_model=AgentSessionRecord,
+        tags=["仿真 Agent"],
+        summary="撤销 Agent 最近一次参数修改",
+    )
+    def undo_assistant(session_id: str, expected_revision: int) -> AgentSessionRecord:
+        return assistant_operation(assistant.undo, session_id, expected_revision)
+
+    @app.post(
+        "/v1/assistant-sessions/{session_id}/launch",
+        response_model=AgentSessionRecord,
+        tags=["仿真 Agent"],
+        summary="确认 Agent 摘要并启动仿真",
+    )
+    def launch_assistant(session_id: str, request: AgentLaunchRequest) -> AgentSessionRecord:
+        return assistant_operation(assistant.launch, session_id, request)
 
     @app.post(
         "/v1/projects",

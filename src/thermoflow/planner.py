@@ -578,8 +578,21 @@ def apply_user_overrides(
         heat_source = heat_source.model_copy(update=source_updates)
         heat_sources = [heat_source, *heat_sources[1:]]
 
+    convection_enabled = (
+        overrides.enable_global_convection
+        if overrides.enable_global_convection is not None
+        else plan.global_convection_enabled
+    )
     convection = plan.convection
-    if convection is not None:
+    if convection is None and convection_enabled and (
+        overrides.ambient_temperature_k is not None
+        or overrides.convection_coefficient_w_m2_k is not None
+    ):
+        convection = ConvectionBoundary(
+            ambient_temperature_k=overrides.ambient_temperature_k or 293.15,
+            heat_transfer_coefficient_w_m2_k=overrides.convection_coefficient_w_m2_k or 10.0,
+        )
+    elif convection is not None:
         convection = convection.model_copy(
             update={
                 key: value
@@ -591,10 +604,13 @@ def apply_user_overrides(
             }
         )
 
-    if source_enabled and heat_sources and plan.solver.backend == "analytic_box_v1":
-        solver_updates["backend"] = "voxel_stl_v1"
-    convection_enabled = overrides.enable_global_convection if overrides.enable_global_convection is not None else plan.global_convection_enabled
     surface_conditions = overrides.surface_conditions if overrides.surface_conditions is not None else plan.surface_conditions
+    if plan.solver.backend == "analytic_box_v1" and (
+        source_enabled and heat_sources
+        or convection_enabled and convection is not None
+        or surface_conditions
+    ):
+        solver_updates["backend"] = "voxel_stl_v1"
     source_summary = ""
     if heat_sources and source_enabled:
         source_summary = (

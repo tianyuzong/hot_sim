@@ -221,6 +221,8 @@ data/
       temperature.vtk       # temperature, heat flux, source power
   agent-runs/agent-<internal-id>/
     agent-run.json          # goal, authorization, candidates, outcome
+  agent-sessions/assistant-<internal-id>/
+    session.json             # Q&A/modeling conversation, citations, draft and task link
   tasks/
     manager.lock            # one scheduler per data directory
     task-<internal-id>/

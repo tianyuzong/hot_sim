@@ -86,6 +86,17 @@ const state = {
   taskPollTimer: null,
   taskPollRunning: false,
   taskConnectionLost: false,
+  assistantSessionId: restoredWorkspace.assistantSessionId || null,
+  assistantSession: null,
+  assistantSessions: [],
+  assistantBusy: false,
+  assistantPendingMessage: "",
+  assistantPendingAnswers: [],
+  assistantStreamAnswer: "",
+  assistantStreamStatus: "",
+  assistantRequestGeneration: 0,
+  assistantCollapsed: Boolean(restoredWorkspace.assistantCollapsed),
+  sidebarView: restoredWorkspace.sidebarView === "assistant" ? "assistant" : "project",
 };
 
 function readWorkspaceState() {
@@ -106,6 +117,9 @@ function persistWorkspaceState() {
       activeTab: state.activeTab,
       visualizationMode: state.visualizationMode,
       diffusionDefaultedStudyId: state.diffusionDefaultedStudyId,
+      assistantSessionId: state.assistantSessionId,
+      assistantCollapsed: state.assistantCollapsed,
+      sidebarView: state.sidebarView,
     }));
   } catch {
     // The workbench remains usable when browser storage is unavailable.
@@ -114,6 +128,9 @@ function persistWorkspaceState() {
 
 const elements = Object.fromEntries(
   [
+    "assistantRail", "assistantConversation", "assistantStatus", "assistantHistory", "assistantBinding", "assistantMessages", "assistantAnswer", "assistantCitations", "assistantQuestionForm",
+    "assistantForm", "assistantInput", "assistantSend", "assistantRetry", "assistantNew", "assistantReview", "assistantReadiness",
+    "assistantSummary", "assistantSummaryConfirmed", "assistantMaterialsConfirmed", "assistantOpenStudyForm", "assistantLaunch",
     "modelingDrawer", "draftSaveStatus", "modelingMessages", "modelingPrivacy", "modelingProposal",
     "modelingChanges", "modelingValidation", "modelingForm", "modelingInput", "applyModeling",
     "dismissModeling", "undoModeling", "reloadDraft", "sendModeling",
@@ -154,6 +171,9 @@ const elements = Object.fromEntries(
     "currentProjectOption",
     "workpieceSearch",
     "workpieceList",
+    "projectSidebarPane",
+    "projectSidebarTab",
+    "assistantSidebarTab",
     "componentTree",
     "componentCount",
     "componentList",
@@ -436,6 +456,8 @@ const elements = Object.fromEntries(
   ].map((id) => [id, document.getElementById(id)]),
 );
 
+if (elements.assistantRail) elements.assistantRail.open = !state.assistantCollapsed;
+
 elements.sourceEditorSlot.append(elements.sourceEditor);
 
 let toastTimer = null;
@@ -618,7 +640,7 @@ async function request(path, options = {}) {
       if (typeof payload.detail === "string") {
         message = payload.detail;
       } else if (Array.isArray(payload.detail)) {
-        message = payload.detail.map((item) => item.msg).join("；");
+        message = payload.detail.map((item) => item?.msg || item?.message || String(item)).join("；");
       } else if (payload.detail?.message) {
         const diagnostics = payload.detail.diagnostics?.join("；");
         message = diagnostics ? `${payload.detail.message}：${diagnostics}` : payload.detail.message;
@@ -631,7 +653,14 @@ async function request(path, options = {}) {
   return response.json();
 }
 
+function errorMessage(error, fallback = "未知错误") {
+  if (typeof error === "string" && error.trim()) return error;
+  if (error && typeof error.message === "string" && error.message.trim()) return error.message;
+  return fallback;
+}
+
 async function loadWorkspace({ preserveSelection = true } = {}) {
+  if (typeof loadAssistantSession === "function") await loadAssistantSession();
   const previousProject = preserveSelection ? state.selectedProjectId : null;
   const previousWorkpiece = preserveSelection ? state.selectedWorkpieceId : null;
   const previousStudy = preserveSelection ? state.selectedStudyId : null;
@@ -641,6 +670,19 @@ async function loadWorkspace({ preserveSelection = true } = {}) {
       request("/v1/projects"),
       request("/v1/materials"),
     ]);
+    let assistantSessions = [];
+    try {
+      const records = await request("/v1/assistant-sessions");
+      assistantSessions = Array.isArray(records) ? records : [];
+    } catch (error) {
+      console.warn("Agent 历史会话暂时不可用", error);
+    }
+    state.assistantSessions = assistantSessions;
+    if (!state.assistantSessionId && assistantSessions.length) {
+      state.assistantSessionId = assistantSessions[0].session_id;
+    }
+    if (typeof loadAssistantSession === "function") await loadAssistantSession();
+    if (typeof renderAssistant === "function") renderAssistant();
     const [workpieces, studies, tasks] = await Promise.all([
       request("/v1/workpieces"),
       request("/v1/studies"),
@@ -681,7 +723,8 @@ async function loadWorkspace({ preserveSelection = true } = {}) {
   } catch (error) {
     state.health = null;
     renderHealth();
-    showToast(`数据加载失败：${error.message}`, true);
+    console.error("工作区数据加载失败", error);
+    showToast(`数据加载失败：${errorMessage(error)}`, true);
   }
 }
 
@@ -837,6 +880,452 @@ function selectedProjectStudies() {
   return state.studies.filter((item) => item.project_id === state.selectedProjectId);
 }
 
+function pendingAssistantAnswer(questionId) {
+  return (state.assistantPendingAnswers || []).find(
+    (answer) => answer.question_id === questionId,
+  ) || null;
+}
+
+function invalidateAgentStudyForm(studyId) {
+  if (!studyId || state.draftSyncedFor !== studyId) return;
+  clearTimeout(state.draftSaveTimer);
+  state.draftSaveTimer = null;
+  state.draftDirty = false;
+  state.draftSaveError = false;
+  state.draftEditSerial += 1;
+  state.draftSyncedFor = null;
+  state.materialsSyncedFor = null;
+  if (state.materialsConfirmedFor === studyId) state.materialsConfirmedFor = null;
+  discardSourceDraft();
+}
+
+function renderAssistant() {
+  const session = state.assistantSession
+    || state.assistantSessions.find(item => item.session_id === state.assistantSessionId)
+    || null;
+  if (!elements.assistantStatus) return;
+  const conversation = elements.assistantConversation || elements.assistantMessages;
+  const sessionKey = state.assistantSessionId || "current";
+  const wasAtBottom = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 24;
+  const shouldFollow = conversation.dataset.sessionKey !== sessionKey || wasAtBottom;
+  const currentSessionOption = createElement("option", "", "当前会话");
+  currentSessionOption.value = "";
+  elements.assistantHistory.replaceChildren(currentSessionOption);
+  state.assistantSessions.slice(0, 30).forEach(item => {
+    const first = item.messages?.find(message => message.role === "user")?.content || item.answer || item.session_id;
+    const option = createElement("option", "", `${first.slice(0, 42)}${first.length > 42 ? "..." : ""}`);
+    option.value = item.session_id;
+    elements.assistantHistory.append(option);
+  });
+  elements.assistantHistory.value = state.assistantSessionId || "";
+  const boundStudy = session?.study_id
+    ? state.studies.find(item => item.study_id === session.study_id)
+    : null;
+  elements.assistantBinding.hidden = !session;
+  elements.assistantBinding.textContent = session?.study_id
+    ? `已绑定研究：${boundStudy?.plan?.study_name || session.study_id}（${session.study_id}）`
+    : session?.workpiece_id
+    ? `已绑定工件：${session.workpiece_id}；尚未创建研究`
+    : "未绑定工件或研究";
+  const statuses = {
+    awaiting_goal: "等待描述", awaiting_geometry: "等待工件", awaiting_unit: "等待尺度",
+    clarifying: "需要补充", ready_for_review: "待确认", queued: "排队中", running: "计算中",
+    needs_mesh_review: "待检查网格", completed: "已完成", failed: "未完成",
+  };
+  elements.assistantStatus.textContent = state.assistantBusy
+    ? "处理中..."
+    : session ? (statuses[session.status] || session.status) : "未开始";
+  elements.assistantMessages.replaceChildren();
+  if (session?.messages) {
+    const messages = session.messages;
+    elements.assistantMessages.replaceChildren(...messages.map(message => {
+      const item = createElement("p", "assistant-message", message.content);
+      item.dataset.role = message.role;
+      return item;
+    }));
+  }
+  if (state.assistantPendingMessage) {
+    const item = createElement("p", "assistant-message", state.assistantPendingMessage);
+    item.dataset.role = "user";
+    elements.assistantMessages.append(item);
+  }
+  if (state.assistantBusy && state.assistantStreamAnswer) {
+    const item = createElement("p", "assistant-message", state.assistantStreamAnswer);
+    item.dataset.role = "assistant";
+    elements.assistantMessages.append(item);
+  }
+  if (state.assistantBusy) {
+    if (!state.assistantStreamAnswer) {
+      elements.assistantMessages.append(createElement(
+        "p", "assistant-message assistant-message-busy",
+        state.assistantStreamStatus || "正在请求 Agent，请稍候…",
+      ));
+    }
+  }
+  conversation.dataset.sessionKey = sessionKey;
+  if (shouldFollow) {
+    requestAnimationFrame(() => {
+      conversation.scrollTop = conversation.scrollHeight;
+    });
+  }
+  const answerIsInConversation = session?.messages?.at(-1)?.role === "assistant"
+    && session.messages.at(-1).content === session.answer;
+  elements.assistantAnswer.hidden = !session?.answer || answerIsInConversation;
+  elements.assistantAnswer.textContent = session?.answer || "";
+  elements.assistantCitations.hidden = !session?.citations?.length;
+  elements.assistantCitations.replaceChildren(...(session?.citations || []).map(citation => {
+    const item = createElement("span", "assistant-citation", citation.label);
+    item.title = citation.source_type === "general_knowledge" ? "通用知识，未由 ThermoFlow 求解器验证" : citation.label;
+    return item;
+  }));
+  elements.assistantQuestionForm.hidden = !session?.questions?.length;
+  const questionFields = (session?.questions || []).map(question => {
+    const pendingAnswer = pendingAssistantAnswer(question.question_id);
+    const fieldset = document.createElement("fieldset");
+    fieldset.className = "assistant-question";
+    fieldset.dataset.questionId = question.question_id;
+    const legend = document.createElement("legend");
+    legend.textContent = question.prompt + (question.unit ? ` (${question.unit})` : "");
+    fieldset.append(legend, createElement("small", "assistant-question-rationale", question.rationale));
+    if (question.type === "single_choice" || question.type === "multi_choice") {
+      (question.options || []).forEach(option => {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = question.type === "single_choice" ? "radio" : "checkbox";
+        input.name = question.question_id;
+        input.value = option.option_id;
+        input.checked = Boolean(pendingAnswer?.option_ids?.includes(option.option_id));
+        input.disabled = state.assistantBusy;
+        label.append(input, document.createTextNode(` ${option.label}`));
+        fieldset.append(label);
+      });
+    } else if (question.type === "number" || question.type === "text") {
+      const input = document.createElement(question.type === "number" ? "input" : "textarea");
+      input.dataset.answerValue = "true";
+      input.name = question.question_id;
+      if (question.type === "number") {
+        input.type = "number";
+        if (question.minimum != null) input.min = question.minimum;
+        if (question.maximum != null) input.max = question.maximum;
+        if (question.step != null) input.step = question.step;
+      } else input.rows = 2;
+      input.required = question.required;
+      if (question.type === "number" && pendingAnswer?.number_value != null) {
+        input.value = String(pendingAnswer.number_value);
+      } else if (question.type === "text" && pendingAnswer?.text_value) {
+        input.value = pendingAnswer.text_value;
+      }
+      input.disabled = state.assistantBusy;
+      fieldset.append(input);
+    } else {
+      const button = createElement("button", "source-reset-button", "打开几何导入");
+      button.type = "button";
+      button.disabled = state.assistantBusy;
+      button.addEventListener("click", openWorkpieceDialog);
+      fieldset.append(button);
+    }
+    return fieldset;
+  });
+  if (questionFields.length) {
+    const actions = document.createElement("div");
+    actions.className = "assistant-question-actions";
+    const submit = createElement("button", "primary-button", "确认并继续");
+    submit.type = "submit";
+    submit.disabled = state.assistantBusy;
+    actions.append(submit);
+    elements.assistantQuestionForm.replaceChildren(...questionFields, actions);
+  } else {
+    elements.assistantQuestionForm.replaceChildren();
+  }
+  const reviewable = session?.status === "ready_for_review" && session.study_id;
+  const reviewSessionId = reviewable ? session.session_id : "";
+  if (elements.assistantReview.dataset.sessionId !== reviewSessionId) {
+    elements.assistantReview.dataset.sessionId = reviewSessionId;
+    elements.assistantSummaryConfirmed.checked = false;
+    elements.assistantMaterialsConfirmed.checked = false;
+  }
+  elements.assistantReview.hidden = !reviewable;
+  const study = session?.study_id ? state.studies.find(item => item.study_id === session.study_id) : null;
+  const plan = study?.plan;
+  if (plan) {
+    const sources = plan.heat_sources?.length ? plan.heat_sources : plan.heat_source ? [plan.heat_source] : [];
+    const boundary = (plan.boundaries || []).map(item => `${item.selector || item.region_id || "区域"} ${item.temperature_k} K`);
+    const rows = [
+      ["分析", plan.analysis_type === "transient_conduction" ? "瞬态导热" : "稳态导热"],
+      ["材料", (plan.component_materials || []).map(item => item.material.name).filter(Boolean).join("、") || plan.material?.name || "未设置"],
+      ["边界", boundary.join("；") || `${plan.surface_conditions?.length || 0} 个区域条件`],
+      ["热源", plan.heat_source_enabled && sources.length ? `${sources.length} 个，总功率 ${sources.reduce((sum, item) => sum + Number(item.total_power_w || 0), 0)} W` : "未启用"],
+      ["网格", plan.mesh ? `${plan.mesh.target_element_size_mm} mm` : "未设置"],
+      ["判据", plan.criteria?.length ? `${plan.criteria.length} 条` : "未设置（探索性仿真）"],
+    ];
+    elements.assistantSummary.replaceChildren(...rows.flatMap(([label, value]) => [
+      createElement("dt", "", label), createElement("dd", "", value),
+    ]));
+  } else elements.assistantSummary.replaceChildren();
+  elements.assistantReadiness.textContent = session?.readiness?.length
+    ? `仍需处理：${session.readiness.join("；")}`
+    : "参数已通过当前检查。请先查看右侧表单，确认最终输入后再提交仿真任务。";
+  elements.assistantOpenStudyForm.hidden = !reviewable;
+  elements.assistantLaunch.disabled = state.assistantBusy || !reviewable
+    || !elements.assistantSummaryConfirmed.checked || !elements.assistantMaterialsConfirmed.checked;
+  elements.assistantSend.disabled = state.assistantBusy;
+  elements.assistantSend.textContent = state.assistantBusy ? "处理中..." : "发送";
+  elements.assistantSend.setAttribute("aria-busy", state.assistantBusy ? "true" : "false");
+  elements.assistantRetry.hidden = !session?.failure;
+  elements.assistantRetry.disabled = state.assistantBusy;
+}
+
+async function streamAssistant(path, options, {onDelta, onStatus}) {
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const payload = await response.json();
+      message = typeof payload.detail === "string" ? payload.detail : payload.detail?.message || message;
+    } catch { /* Keep the HTTP fallback. */ }
+    throw new Error(message);
+  }
+  if (!response.body) throw new Error("浏览器不支持流式响应");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completed = null;
+  const consume = (block) => {
+    let event = "message";
+    const data = [];
+    block.split("\n").forEach(line => {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    });
+    if (!data.length) return;
+    const payload = JSON.parse(data.join("\n"));
+    if (event === "delta") onDelta?.(payload.text || "");
+    else if (event === "status") onStatus?.(payload.message || "正在处理…");
+    else if (event === "error") throw new Error(payload.message || "Agent 请求失败");
+    else if (event === "complete") completed = payload;
+  };
+  while (true) {
+    const {value, done} = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop() || "";
+    blocks.filter(Boolean).forEach(consume);
+    if (done) break;
+  }
+  if (buffer.trim()) consume(buffer);
+  if (!completed) throw new Error("Agent 流式响应未完成");
+  return completed;
+}
+
+function setSidebarView(view, {persist = true} = {}) {
+  state.sidebarView = view === "assistant" ? "assistant" : "project";
+  const assistant = state.sidebarView === "assistant";
+  elements.projectSidebarPane.hidden = assistant;
+  elements.assistantRail.hidden = !assistant;
+  elements.projectSidebarTab.classList.toggle("is-active", !assistant);
+  elements.assistantSidebarTab.classList.toggle("is-active", assistant);
+  elements.projectSidebarTab.setAttribute("aria-selected", String(!assistant));
+  elements.assistantSidebarTab.setAttribute("aria-selected", String(assistant));
+  if (persist) persistWorkspaceState();
+  if (assistant) renderAssistant();
+}
+
+function assistantQuestionAnswers() {
+  return [...elements.assistantQuestionForm.querySelectorAll("fieldset[data-question-id]")].map(fieldset => {
+    const questionId = fieldset.dataset.questionId;
+    const checked = [...fieldset.querySelectorAll("input[type=radio]:checked, input[type=checkbox]:checked")];
+    const number = fieldset.querySelector("input[type=number]");
+    const text = fieldset.querySelector("textarea");
+    const answer = {
+      question_id: questionId,
+      option_ids: checked.map(input => input.value),
+      ...(number ? { number_value: number.value === "" ? null : Number(number.value) } : {}),
+      ...(text ? { text_value: text.value.trim() || null } : {}),
+    };
+    return answer;
+  }).filter(answer => answer.option_ids.length || answer.number_value != null || answer.text_value);
+}
+
+async function submitAssistantTurn(event) {
+  return submitAssistantInput(event);
+}
+
+async function submitAssistantAnswers(event) {
+  return submitAssistantInput(event, {answersOnly: true});
+}
+
+async function submitAssistantInput(event, {answersOnly = false, retry = false} = {}) {
+  event.preventDefault();
+  if (state.assistantBusy) return;
+  const message = answersOnly || retry ? "" : elements.assistantInput.value.trim();
+  const answers = retry ? [] : assistantQuestionAnswers();
+  if (!retry && !message && !answers.some(answer => answer.option_ids.length || answer.number_value != null || answer.text_value)) {
+    showToast("请输入问题或回答当前选项", true);
+    return;
+  }
+  const requestGeneration = ++state.assistantRequestGeneration;
+  // Clear immediately so the submitted text cannot remain in the composer while the Agent works.
+  if (!answersOnly) elements.assistantInput.value = "";
+  state.assistantPendingMessage = message;
+  state.assistantPendingAnswers = answers;
+  state.assistantStreamAnswer = "";
+  state.assistantStreamStatus = "正在连接 Agent…";
+  state.assistantBusy = true;
+  renderAssistant();
+  try {
+    let session;
+    if (!state.assistantSession) {
+      session = await streamAssistant("/v1/assistant-sessions/stream", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message, project_id: state.selectedProjectId || undefined,
+          workpiece_id: state.selectedWorkpieceId || undefined,
+          study_id: state.selectedStudyId || undefined,
+        }),
+      }, {
+        onDelta(delta) {
+          if (requestGeneration !== state.assistantRequestGeneration) return;
+          state.assistantStreamAnswer += delta;
+          renderAssistant();
+        },
+        onStatus(message) {
+          if (requestGeneration !== state.assistantRequestGeneration) return;
+          state.assistantStreamStatus = message;
+          renderAssistant();
+        },
+      });
+    } else {
+      if (!state.assistantSession.workpiece_id && state.selectedWorkpieceId && message) {
+        state.assistantSession = await request(`/v1/assistant-sessions/${state.assistantSession.session_id}/workpiece`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expected_revision: state.assistantSession.revision, workpiece_id: state.selectedWorkpieceId }),
+        });
+      }
+      session = await streamAssistant(`/v1/assistant-sessions/${state.assistantSession.session_id}/turns/stream`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_revision: state.assistantSession.revision,
+          message: message || undefined,
+          answers,
+          retry: retry || undefined,
+        }),
+      }, {
+        onDelta(delta) {
+          if (requestGeneration !== state.assistantRequestGeneration) return;
+          state.assistantStreamAnswer += delta;
+          renderAssistant();
+        },
+        onStatus(message) {
+          if (requestGeneration !== state.assistantRequestGeneration) return;
+          state.assistantStreamStatus = message;
+          renderAssistant();
+        },
+      });
+    }
+    if (requestGeneration !== state.assistantRequestGeneration) return;
+    state.assistantSession = session;
+    state.assistantSessionId = session.session_id;
+    state.assistantSessions = [session, ...state.assistantSessions.filter(item => item.session_id !== session.session_id)];
+    if (session.study_id) {
+      state.selectedStudyId = session.study_id;
+      invalidateAgentStudyForm(session.study_id);
+    }
+    state.assistantPendingMessage = "";
+    state.assistantPendingAnswers = [];
+    state.assistantStreamAnswer = "";
+    state.assistantStreamStatus = "";
+    persistWorkspaceState();
+    renderAssistant();
+    if (session.study_id) await loadWorkspace();
+  } catch (error) {
+    if (requestGeneration !== state.assistantRequestGeneration) return;
+    showToast(`Agent 请求失败：${error.message}`, true);
+    state.assistantPendingMessage = "";
+    state.assistantStreamAnswer = "";
+    state.assistantStreamStatus = "";
+  } finally {
+    if (requestGeneration === state.assistantRequestGeneration) {
+      state.assistantBusy = false;
+      renderAssistant();
+    }
+  }
+}
+
+async function launchAssistant() {
+  const session = state.assistantSession;
+  if (!session) return;
+  state.assistantBusy = true;
+  renderAssistant();
+  try {
+    state.assistantSession = await request(`/v1/assistant-sessions/${session.session_id}/launch`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_revision: session.revision,
+        expected_study_revision: session.study_revision,
+        summary_confirmed: elements.assistantSummaryConfirmed.checked,
+        materials_confirmed: elements.assistantMaterialsConfirmed.checked,
+        form_reviewed: elements.assistantSummaryConfirmed.checked }),
+    });
+    persistWorkspaceState();
+    await loadWorkspace();
+  } catch (error) { showToast(`仿真启动失败：${error.message}`, true); }
+  finally { state.assistantBusy = false; renderAssistant(); }
+}
+
+async function openAssistantStudyForm() {
+  const session = state.assistantSession;
+  if (!session?.study_id) return;
+  await selectStudy(session.study_id, {activeTab: "scenario"});
+  elements.structuredInputs.scrollIntoView({block: "start", behavior: "smooth"});
+  showToast("请在右侧表单核对材料、边界、热源、网格和判据后，再回到 Agent 确认。");
+}
+
+function upsertAssistantSession(session) {
+  state.assistantSession = session;
+  state.assistantSessionId = session.session_id;
+  state.assistantSessions = [session, ...state.assistantSessions.filter(item => item.session_id !== session.session_id)];
+}
+
+async function refreshAssistantTaskStatus() {
+  const session = state.assistantSession;
+  if (!session?.task_id) return;
+  const before = session.status;
+  try {
+    const refreshed = await request(`/v1/assistant-sessions/${session.session_id}`);
+    upsertAssistantSession(refreshed);
+    if (before !== refreshed.status && ["completed", "needs_mesh_review", "failed"].includes(refreshed.status)) {
+      showToast(refreshed.answer || "Agent 已更新仿真任务状态", refreshed.status !== "completed");
+    }
+    renderAssistant();
+  } catch (error) {
+    console.warn("Agent 任务状态读取失败", error);
+  }
+}
+
+async function loadAssistantSession() {
+  if (!state.assistantSessionId) return;
+  if (!/^assistant-[0-9a-f]{32}$/.test(state.assistantSessionId)) {
+    state.assistantSession = null;
+    state.assistantSessionId = null;
+    persistWorkspaceState();
+    return;
+  }
+  try {
+    state.assistantSession = await request(`/v1/assistant-sessions/${state.assistantSessionId}`);
+    if (state.assistantSession.project_id) state.selectedProjectId = state.assistantSession.project_id;
+    if (state.assistantSession.workpiece_id) state.selectedWorkpieceId = state.assistantSession.workpiece_id;
+    if (state.assistantSession.study_id) state.selectedStudyId = state.assistantSession.study_id;
+  } catch {
+    const cached = state.assistantSessions.find(item => item.session_id === state.assistantSessionId);
+    if (cached) {
+      state.assistantSession = cached;
+    } else {
+      state.assistantSession = null;
+      state.assistantSessionId = null;
+      persistWorkspaceState();
+    }
+  }
+}
+
 function render() {
   renderHealth();
   renderWorkpieces();
@@ -844,6 +1333,7 @@ function render() {
   renderWorkspace();
   renderStudies();
   renderInspector();
+  renderAssistant();
   renderPrimaryAction();
   drawWorkpiece();
 }
@@ -3150,7 +3640,7 @@ async function handlePrimaryAction() {
     }
     if (workpiece.cad_format === "stl" && study.mesh_status === "blocked") {
       switchTab("mesh");
-      showToast("网格质量检查未通过；请建立新研究并减小目标单元尺寸", true);
+      showToast("当前确认研究不可直接编辑；请复制为新修订，检查区域映射，并同步调整目标单元尺寸和最大单轴区间数", true);
       return;
     }
     if (workpiece.cad_format === "stl" && study.mesh_status !== "ready") {
@@ -3211,6 +3701,18 @@ async function confirmUnit(event) {
     state.activeTab = "scenario";
     resetStlView(false);
     await loadWorkspace();
+    if (state.assistantSession && state.assistantSession.workpiece_id === workpiece.workpiece_id) {
+      state.assistantSession = await request(`/v1/assistant-sessions/${state.assistantSession.session_id}/workpiece`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_revision: state.assistantSession.revision, workpiece_id: workpiece.workpiece_id }),
+      });
+      state.assistantSessionId = state.assistantSession.session_id;
+      state.selectedStudyId = state.assistantSession.study_id || null;
+      persistWorkspaceState();
+      await loadWorkspace();
+      showToast("尺度已确认，Agent 将继续补齐仿真参数。");
+      return;
+    }
     {
       const study = await createStudy(
         workpiece.workpiece_id,
@@ -3638,7 +4140,9 @@ function renderComputationStatus() {
 
 function scheduleTaskPoll() {
   clearTimeout(state.taskPollTimer);
-  if (state.tasks.some(task => !TASK_TERMINAL_STATES.has(task.status))) {
+  const assistantTrackingTask = state.assistantSession?.task_id
+    && !["completed", "needs_mesh_review", "failed"].includes(state.assistantSession.status);
+  if (state.tasks.some(task => !TASK_TERMINAL_STATES.has(task.status)) || assistantTrackingTask) {
     state.taskPollTimer = setTimeout(pollComputationTasks, 900);
   }
 }
@@ -3652,6 +4156,7 @@ async function pollComputationTasks() {
     state.taskConnectionLost = false;
     const completed = state.tasks.filter(task => TASK_TERMINAL_STATES.has(task.status)
       && previous.some(old => old.task_id === task.task_id && !TASK_TERMINAL_STATES.has(old.status)));
+    await refreshAssistantTaskStatus();
     const selectedCompletion = completed.find(task => task.study_id === state.selectedStudyId);
     if (selectedCompletion?.status === "succeeded") {
       state.activeTab = selectedCompletion.operation === "mesh" ? "mesh" : "result";
@@ -4360,6 +4865,16 @@ async function submitWorkpiece(event) {
     state.draftSyncedFor = null;
     closeWorkpieceDialog();
     await loadWorkspace();
+    if (state.assistantSession && !state.assistantSession.workpiece_id) {
+      try {
+        state.assistantSession = await request(`/v1/assistant-sessions/${state.assistantSession.session_id}/workpiece`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expected_revision: state.assistantSession.revision, workpiece_id: workpiece.workpiece_id }),
+        });
+        persistWorkspaceState();
+        renderAssistant();
+      } catch (error) { showToast(`Agent 绑定工件失败：${error.message}`, true); }
+    }
     showToast("STL 已导入，请确认单位与实际尺寸");
   } catch (error) {
     showToast(`STL 导入失败：${error.message}`, true);
@@ -6109,6 +6624,59 @@ elements.acceptMeshWarnings.addEventListener("change", renderPrimaryAction);
 elements.diagnosticsButton.addEventListener("click", () => elements.diagnosticsDialog.showModal());
 elements.closeDiagnosticsButton.addEventListener("click", () => elements.diagnosticsDialog.close());
 elements.agentForm.addEventListener("submit", runAgent);
+elements.projectSidebarTab.addEventListener("click", () => setSidebarView("project"));
+elements.assistantSidebarTab.addEventListener("click", () => setSidebarView("assistant"));
+elements.assistantForm.addEventListener("submit", submitAssistantTurn);
+elements.assistantQuestionForm.addEventListener("submit", submitAssistantAnswers);
+elements.assistantRetry.addEventListener("click", (event) => submitAssistantInput(event, {retry: true}));
+elements.assistantQuestionForm.addEventListener("change", (event) => {
+  const session = state.assistantSession;
+  const questions = session?.questions || [];
+  if (
+    state.assistantBusy
+    || event.target.type !== "radio"
+    || questions.length !== 1
+    || questions[0].type !== "single_choice"
+  ) return;
+  requestAnimationFrame(() => elements.assistantQuestionForm.requestSubmit());
+});
+elements.assistantInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  if (!elements.assistantSend.disabled) elements.assistantForm.requestSubmit();
+});
+elements.assistantLaunch.addEventListener("click", launchAssistant);
+elements.assistantOpenStudyForm.addEventListener("click", openAssistantStudyForm);
+elements.assistantSummaryConfirmed.addEventListener("change", renderAssistant);
+elements.assistantMaterialsConfirmed.addEventListener("change", renderAssistant);
+elements.assistantNew.addEventListener("click", () => {
+  state.assistantRequestGeneration += 1;
+  state.assistantBusy = false;
+  state.assistantPendingMessage = "";
+  state.assistantStreamAnswer = "";
+  state.assistantStreamStatus = "";
+  state.assistantSession = null;
+  state.assistantSessionId = null;
+  elements.assistantInput.value = "";
+  persistWorkspaceState();
+  renderAssistant();
+});
+elements.assistantRail?.addEventListener("toggle", () => {
+  state.assistantCollapsed = !elements.assistantRail.open;
+  persistWorkspaceState();
+});
+elements.assistantHistory.addEventListener("change", async () => {
+  const sessionId = elements.assistantHistory.value;
+  if (!sessionId) {
+    state.assistantSession = null;
+    state.assistantSessionId = null;
+    persistWorkspaceState();
+    renderAssistant();
+    return;
+  }
+  state.assistantSessionId = sessionId;
+  await loadWorkspace();
+});
 elements.agentSelectedStudy.addEventListener("click", () => {
   const studyId = elements.agentSelectedStudy.dataset.studyId;
   if (studyId) selectStudy(studyId, {
@@ -6313,4 +6881,5 @@ import("/assets/viewport.mjs?v=20260909-flow7").then(({ EngineeringViewport }) =
   });
   drawWorkpiece();
 }).catch(() => showViewportStatus("无法启动 WebGL 三维画布，请检查浏览器图形加速支持", true));
+setSidebarView(state.sidebarView, {persist: false});
 loadWorkspace();

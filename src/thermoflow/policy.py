@@ -110,7 +110,12 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
                 )
     heat_sources = plan.heat_sources or ([plan.heat_source] if plan.heat_source is not None else [])
     source_active = bool(heat_sources) and plan.heat_source_enabled
-    expected_backend = "voxel_stl_v1" if is_stl or (is_box and source_active) else "analytic_box_v1"
+    box_requires_voxel = is_box and (
+        source_active
+        or plan.global_convection_enabled and plan.convection is not None
+        or bool(plan.surface_conditions)
+    )
+    expected_backend = "voxel_stl_v1" if is_stl or box_requires_voxel else "analytic_box_v1"
     is_voxel = plan.solver.backend == "voxel_stl_v1"
     if plan.solver.backend != expected_backend:
         errors.append(f"该工件必须使用已注册求解器 {expected_backend}。")
@@ -120,8 +125,8 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
         errors.append("物理场列表与分析类型不一致。")
     time_steps = 0
     if transient:
-        if not is_stl:
-            errors.append("瞬态导热需要 STL 数值网格；解析长方体仅支持稳态验证。")
+        if not is_voxel:
+            errors.append("瞬态导热需要数值网格；解析长方体仅支持稳态验证。")
         for field, label in (("initial_temperature_k", "初始温度"),
                              ("duration_s", "工作持续时间"), ("time_step_s", "时间步长")):
             if getattr(plan, field) is None:
@@ -234,8 +239,12 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
             suggestion="删除重复行；如果原本要约束另一个区域，请修改其中一行的区域。",
             fields=fields,
         )
-    if is_box and (len(plan.boundaries) != 2 or any(b.region_id for b in plan.boundaries)
-                   or first.selector.axis != second.selector.axis or first.selector.side == second.selector.side):
+    if is_box and not is_voxel and (
+        len(plan.boundaries) != 2
+        or any(b.region_id for b in plan.boundaries)
+        or first.selector.axis != second.selector.axis
+        or first.selector.side == second.selector.side
+    ):
         errors.append("解析长方体需要在同一坐标轴的两个相对表面设置固定温度。")
     condition_names = {
         "fixed_temperature": "固定温度",
@@ -285,7 +294,7 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
                     suggestion="选择支持该条件的区域，或删除这行不适用的边界条件。",
                     fields=[field],
                 )
-    if is_box and plan.surface_conditions:
+    if is_box and not is_voxel and plan.surface_conditions:
         errors.append("解析长方体仅支持两端定温验证；区域热流、对流和辐射需要 STL 数值网格。")
     if plan.contacts:
         if not is_stl:

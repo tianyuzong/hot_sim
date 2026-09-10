@@ -1316,6 +1316,143 @@ class AgentRunRecord(StrictModel):
     failure: str | None = None
 
 
+class AgentCitation(StrictModel):
+    """A user-visible, server-validated source attached to an Agent answer."""
+
+    citation_id: str = Field(min_length=1, max_length=100)
+    source_type: Literal["thermoflow_doc", "study_context", "general_knowledge"]
+    title: str = Field(min_length=1, max_length=200)
+    section: str | None = Field(default=None, max_length=200)
+    label: str = Field(min_length=1, max_length=300)
+
+
+class AgentQuestionOption(StrictModel):
+    option_id: str = Field(min_length=1, max_length=100)
+    label: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class AgentQuestion(StrictModel):
+    """Typed UI question; values are interpreted only by the server registry."""
+
+    question_id: str = Field(min_length=1, max_length=120)
+    group: str = Field(min_length=1, max_length=80)
+    type: Literal["single_choice", "multi_choice", "number", "text", "file_upload", "region_picker"]
+    prompt: str = Field(min_length=1, max_length=500)
+    rationale: str = Field(min_length=1, max_length=500)
+    required: bool = True
+    unit: str | None = Field(default=None, max_length=32)
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+    options: list[AgentQuestionOption] = Field(default_factory=list, max_length=32)
+
+
+class AgentQuestionAnswer(StrictModel):
+    """Answer envelope; the question definition determines which value is legal."""
+
+    question_id: str = Field(min_length=1, max_length=120)
+    option_ids: list[str] = Field(default_factory=list, max_length=32)
+    number_value: float | None = None
+    text_value: str | None = Field(default=None, max_length=4_000)
+    region_ids: list[str] = Field(default_factory=list, max_length=24)
+
+
+class AgentComponentMaterialSelection(StrictModel):
+    """A catalog material selected by the modeling model for one known component."""
+
+    component_id: str = Field(min_length=1, max_length=80)
+    material_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,79}$")
+
+
+class AgentModelingTurn(StrictModel):
+    """A schema-constrained LLM turn for the conversational modeling workflow."""
+
+    answer: str = Field(min_length=1, max_length=4_000)
+    overrides: SimulationOverrides | None = None
+    catalog_material_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9-]{1,79}$",
+    )
+    component_materials: list[AgentComponentMaterialSelection] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    questions: list[AgentQuestion] = Field(default_factory=list, max_length=12)
+    missing_information: list[str] = Field(default_factory=list, max_length=20)
+    ready_for_review: bool = False
+
+
+class AgentSessionRecord(StrictModel):
+    """Persistent read-only Q&A and controlled modeling session."""
+
+    session_id: str = Field(pattern=r"^assistant-[0-9a-f]{32}$")
+    revision: int = Field(default=0, ge=0)
+    mode: Literal["qa", "modeling", "result_explanation", "launching"] = "qa"
+    status: Literal[
+        "awaiting_goal", "awaiting_geometry", "awaiting_unit", "clarifying",
+        "ready_for_review", "queued", "running", "needs_mesh_review", "completed", "failed",
+    ] = "awaiting_goal"
+    project_id: str | None = Field(default=None, pattern=r"^project-[0-9a-f]{32}$")
+    workpiece_id: str | None = None
+    study_id: str | None = None
+    study_revision: int | None = Field(default=None, ge=0)
+    task_id: str | None = None
+    goal: str = Field(default="", max_length=4_000)
+    messages: list[ModelingMessage] = Field(default_factory=list, max_length=40)
+    questions: list[AgentQuestion] = Field(default_factory=list, max_length=12)
+    citations: list[AgentCitation] = Field(default_factory=list, max_length=8)
+    answer: str | None = Field(default=None, max_length=4_000)
+    readiness: list[str] = Field(default_factory=list, max_length=20)
+    input_provenance: dict[str, str] = Field(default_factory=dict, max_length=200)
+    updated_at: datetime = Field(default_factory=utc_now)
+    failure: str | None = Field(default=None, max_length=500)
+
+
+class AgentSessionCreateRequest(StrictModel):
+    message: str = Field(min_length=1, max_length=4_000)
+    project_id: str | None = Field(default=None, pattern=r"^project-[0-9a-f]{32}$")
+    workpiece_id: str | None = None
+    study_id: str | None = None
+
+    @field_validator("message")
+    @classmethod
+    def normalize_message(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("请输入问题或仿真需求")
+        return value
+
+
+class AgentTurnRequest(StrictModel):
+    expected_revision: int = Field(ge=0)
+    message: str | None = Field(default=None, max_length=4_000)
+    answers: list[AgentQuestionAnswer] = Field(default_factory=list, max_length=12)
+    retry: bool = False
+
+    @model_validator(mode="after")
+    def require_turn_content(self) -> AgentTurnRequest:
+        if not (self.message and self.message.strip()) and not self.answers and not self.retry:
+            raise ValueError("请输入问题、补充描述或回答当前选项")
+        if self.message is not None:
+            self.message = self.message.strip()
+        return self
+
+
+class AgentWorkpieceRequest(StrictModel):
+    expected_revision: int = Field(ge=0)
+    workpiece_id: str = Field(min_length=1, max_length=80)
+
+
+class AgentLaunchRequest(StrictModel):
+    expected_revision: int = Field(ge=0)
+    expected_study_revision: int = Field(ge=0)
+    summary_confirmed: bool = False
+    materials_confirmed: bool = False
+    form_reviewed: bool = False
+    confirmed_by: str = Field(default="当前用户", min_length=1, max_length=120)
+
+
 class StlSimulationResponse(StrictModel):
     """单次 STL 上传、参数自动补齐与同步求解的完整响应。"""
 

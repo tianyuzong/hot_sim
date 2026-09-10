@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#171a1d" />
     <meta name="description" content="ThermoFlow 热仿真工作台与智能工程仿真平台" />
     <title>ThermoFlow 智能工程仿真平台</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260909-validation1" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260910-assistant-layout4" />
   </head>
   <body>
     <div class="app-shell">
@@ -57,20 +57,67 @@
               <span aria-hidden="true">⇧</span>
             </button>
           </div>
-          <label class="search-field">
-            <span class="sr-only">搜索项目或工件</span>
-            <input id="workpieceSearch" type="search" placeholder="搜索项目或工件" autocomplete="off" />
-          </label>
-          <div class="workpiece-list" id="workpieceList" aria-live="polite"></div>
-          <section class="component-tree" id="componentTree" hidden>
-            <header><span>组件</span><small id="componentCount">0</small></header>
-            <div id="componentList"></div>
-          </section>
-          <div class="source-editor-slot" id="sourceEditorSlot" hidden></div>
-          <div class="panel-footer">
-            <span id="workpieceCount">0 个项目</span>
-            <span id="studyCount">0 项研究</span>
+          <div class="sidebar-tabs" role="tablist" aria-label="左侧工作区">
+            <button id="projectSidebarTab" class="sidebar-tab is-active" type="button" role="tab" aria-selected="true">项目与组件</button>
+            <button id="assistantSidebarTab" class="sidebar-tab" type="button" role="tab" aria-selected="false">Agent</button>
           </div>
+          <div id="projectSidebarPane" class="sidebar-pane">
+            <label class="search-field">
+              <span class="sr-only">搜索项目或工件</span>
+              <input id="workpieceSearch" type="search" placeholder="搜索项目或工件" autocomplete="off" />
+            </label>
+            <div class="workpiece-list" id="workpieceList" aria-live="polite"></div>
+            <section class="component-tree" id="componentTree" hidden>
+              <header><span>组件</span><small id="componentCount">0</small></header>
+              <div id="componentList"></div>
+            </section>
+            <div class="source-editor-slot" id="sourceEditorSlot" hidden></div>
+            <div class="panel-footer">
+              <span id="workpieceCount">0 个项目</span>
+              <span id="studyCount">0 项研究</span>
+            </div>
+          </div>
+          <details class="assistant-section assistant-rail" id="assistantRail" open hidden>
+            <summary class="assistant-rail-summary">
+              <div>
+                <span class="eyebrow">工程助手</span>
+                <h3 id="assistantTitle">Agent 问答与建模</h3>
+              </div>
+              <span id="assistantStatus" class="confidence">未开始</span>
+            </summary>
+            <div class="assistant-rail-body">
+              <label class="assistant-history-label" for="assistantHistory">历史会话
+                <select id="assistantHistory" aria-label="选择历史 Agent 会话">
+                  <option value="">当前会话</option>
+                </select>
+              </label>
+              <p id="assistantBinding" class="assistant-binding" hidden></p>
+              <div id="assistantConversation" class="assistant-conversation" tabindex="0" aria-label="Agent 聊天记录">
+                <div id="assistantMessages" class="assistant-messages" aria-live="polite"></div>
+                <div id="assistantAnswer" class="assistant-answer" hidden></div>
+                <div id="assistantCitations" class="assistant-citations" hidden></div>
+                <form id="assistantQuestionForm" class="assistant-question-form" hidden></form>
+                <section id="assistantReview" class="assistant-review" hidden>
+                  <h4>仿真计划摘要</h4>
+                  <dl id="assistantSummary" class="assistant-summary"></dl>
+                  <p id="assistantReadiness"></p>
+                  <button class="secondary-button" id="assistantOpenStudyForm" type="button">查看右侧表单</button>
+                  <label class="confirmation-check"><input id="assistantSummaryConfirmed" type="checkbox" /> 我已查看右侧表单并确认最终仿真输入</label>
+                  <label class="confirmation-check"><input id="assistantMaterialsConfirmed" type="checkbox" /> 我已逐组件确认材料及热物性</label>
+                  <button class="primary-button" id="assistantLaunch" type="button">确认摘要并开始仿真</button>
+                </section>
+              </div>
+              <form id="assistantForm" class="assistant-form">
+                <label for="assistantInput" class="sr-only">向 Agent 提问或描述仿真需求</label>
+                <textarea id="assistantInput" rows="2" maxlength="4000" placeholder="询问热分析知识，或描述你想设置的仿真"></textarea>
+                <div class="assistant-actions">
+                  <button class="primary-button" id="assistantSend" type="submit">发送</button>
+                  <button class="secondary-button" id="assistantRetry" type="button" hidden>重试</button>
+                  <button class="source-reset-button" id="assistantNew" type="button">新建会话</button>
+                </div>
+              </form>
+            </div>
+          </details>
         </aside>
 
         <section class="workspace" aria-labelledby="workspaceTitle">
@@ -959,6 +1006,6 @@
     <script src="/assets/source-editor-model.js?v=20260908-3" defer></script>
     <script src="/assets/transient-display.js?v=20260909-flow1" defer></script>
     <script src="/assets/validation-feedback.js?v=20260909-1" defer></script>
-    <script src="/assets/app.js?v=20260909-validation1" defer></script>
+    <script src="/assets/app.js?v=20260910-assistant-layout10" defer></script>
   </body>
 </html>
