@@ -17,6 +17,7 @@ from .agent import SimulationAgent, build_agent_policy
 from .cadflow_adapter import CadFlowGeometryInspector
 from .materials import list_materials
 from .modeling import ModelingService
+from .glm_modeling import GLMModelingPlanner
 from .models import (
     AgentGoalRequest,
     AgentRunRecord,
@@ -120,7 +121,9 @@ def create_app(
         service=service,
         policy=build_agent_policy(resolved),
     )
-    modeling = ModelingService(service, retain_history=resolved.retain_modeling_history)
+    modeling_planner = GLMModelingPlanner(resolved) if resolved.modeling_provider == "glm" else None
+    modeling = ModelingService(service, retain_history=resolved.retain_modeling_history,
+                               planner=modeling_planner)
     task_manager = TaskManager(repository, compute_backend=resolved.compute_backend,
                                workers=resolved.task_workers, queue_limit=resolved.task_queue_limit,
                                timeout_seconds=resolved.task_timeout_seconds)
@@ -193,6 +196,12 @@ def create_app(
             "agent_model": simulation_agent.policy.model,
             "cadflow_repo_found": resolved.cadflow_repo.is_dir(),
             "compute": service.compute_runtime(),
+            "modeling_agent": modeling_planner.status() if modeling_planner else {
+                "provider": resolved.planner_mode,
+                "model": resolved.openai_model if resolved.planner_mode == "openai" else None,
+                "configured": True,
+                "message": "使用当前规划器辅助填写参数",
+            },
         }
 
     @app.post(
@@ -358,7 +367,9 @@ def create_app(
                 detail=f"上传的 CAD 文件超过 {resolved.max_upload_bytes} 字节限制",
             )
         try:
-            return service.register_file(filename, payload, project_id)
+            return await run_in_threadpool(service.register_file, filename, payload, project_id)
+        except RecordNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -647,7 +658,7 @@ def create_app(
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
-                detail="仿真草案生成失败，请稍后重试或检查 Agent 服务状态",
+                detail="STL 尺度换算未完成，请检查几何文件后重试",
             ) from exc
 
     @app.post(

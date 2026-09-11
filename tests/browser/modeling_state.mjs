@@ -15,7 +15,7 @@ const element = (value = "") => ({ value, checked: false, disabled: false,
   validity: { badInput: false }, checkValidity: () => true });
 const elements = Object.fromEntries(["draftAnalysisType", "draftInitialTemperature", "draftDuration", "draftTimeStep",
   "draftHeatAxis", "draftCriterionMax", "draftEnableHeatSource", "draftEnableGlobalConvection", "draftSourcePower",
-  "draftSourceRadius", "draftAmbient", "draftConvection", "draftMeshSize", "studyPurpose", "draftSaveStatus"].map(id => [id, element()]));
+  "draftSourceRadius", "draftAmbient", "draftConvection", "draftMeshSize", "draftMeshMethod", "studyPurpose", "draftSaveStatus"].map(id => [id, element()]));
 elements.componentMaterialList = { querySelectorAll: () => [] };
 elements.structuredInputs = { querySelectorAll: () => [elements.draftTimeStep] };
 elements.sourceEditor = { hidden: true };
@@ -24,6 +24,7 @@ elements.draftTimeStep.id = "draftTimeStep";
 elements.draftTimeStep.checkValidity = () => false;
 elements.draftCriterionMax.value = "400";
 elements.draftMeshSize.value = "1";
+elements.draftMeshMethod.value = "voxel_stl_v1";
 elements.studyPurpose.value = "Edited scenario";
 const state = { selectedStudyId: "study-a", studies: [], draftBaseRevision: 0, draftDirty: true,
   draftSaveError: false, draftEditSerial: 1, draftSavePromise: null, modelingSessionHistory: new Map() };
@@ -44,7 +45,7 @@ const context = vm.createContext({ state, elements, clearTimeout, console,
   fixedBoundaryValues: () => [], surfaceConditionValues: () => [],
   thermalContactValues: () => study.plan.contacts,
   materialAssignmentFromRow: () => assert.fail("No material row in this fixture"),
-  renderModeling() {}, showToast() {}, discardSourceDraft() {}, renderInspector() {}, drawWorkpiece() {},
+  renderModeling() {}, renderPrimaryAction() {}, showToast() {}, discardSourceDraft() {}, renderInspector() {}, drawWorkpiece() {},
   request: async (url, options) => {
     requests.push(JSON.parse(options.body));
     return new Promise(resolve => { resolveRequest = resolve; });

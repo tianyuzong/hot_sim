@@ -63,6 +63,11 @@ class FileRepository:
                       key=lambda record: record.created_at, reverse=True)
 
     @contextmanager
+    def project_lock(self, project_id: str):
+        with _file_lock(self.project_dir(project_id) / "project.lock", blocking=True):
+            yield
+
+    @contextmanager
     def workpiece_lock(self, workpiece_id: str):
         with _file_lock(self.workpiece_dir(workpiece_id) / "geometry.lock", blocking=False):
             yield

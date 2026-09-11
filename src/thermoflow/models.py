@@ -412,7 +412,7 @@ class MeshPlan(StrictModel):
 class SolverPlan(StrictModel):
     """GPT 选择的已注册求解器及其数值参数。"""
 
-    backend: Literal["analytic_box_v1", "voxel_stl_v1"]
+    backend: Literal["analytic_box_v1", "voxel_stl_v1", "tetra_stl_v1"]
     relative_tolerance: float = Field(ge=1e-12, le=1e-3, description="相对收敛容差")
     max_iterations: int = Field(ge=10, le=100_000, description="最大迭代次数")
 
@@ -441,8 +441,8 @@ class SimulationPlan(StrictModel):
     study_name: str = Field(min_length=1, max_length=120, description="仿真研究名称")
     analysis_type: Literal["steady_state_conduction", "transient_conduction"] = "steady_state_conduction"
     initial_temperature_k: float | None = Field(default=None, ge=1, le=5_000)
-    duration_s: float | None = Field(default=None, gt=0, le=31_536_000)
-    time_step_s: float | None = Field(default=None, gt=0, le=31_536_000)
+    duration_s: float | None = Field(default=None, gt=0, le=3_600)
+    time_step_s: float | None = Field(default=None, gt=0, le=3_600)
     material: ThermalMaterial = Field(description="材料及其热物性")
     boundaries: list[FixedTemperatureBoundary] = Field(
         min_length=0, max_length=24, description="固定温度边界，可引用已保存的表面区域"
@@ -666,7 +666,7 @@ class SimulationMeshSpec(StrictModel):
 
 
 class SimulationSolverSpec(StrictModel):
-    type: Literal["analytic_box_v1", "voxel_stl_v1"]
+    type: Literal["analytic_box_v1", "voxel_stl_v1", "tetra_stl_v1"]
     relative_tolerance: Quantity
     max_iterations: int = Field(ge=10, le=100_000)
     time_step: Quantity | None = None
@@ -754,6 +754,7 @@ class AgentRunStatus(StrEnum):
 
 
 class SimulationOverrides(StrictModel):
+    solver_backend: Literal["analytic_box_v1", "voxel_stl_v1", "tetra_stl_v1"] | None = None
     fixed_boundaries: list[FixedTemperatureBoundary] | None = Field(default=None, min_length=0, max_length=24)
     surface_conditions: list[SurfaceThermalBoundary] | None = Field(default=None, max_length=48)
     contacts: list[ThermalContactCondition] | None = Field(default=None, max_length=100)
@@ -762,8 +763,8 @@ class SimulationOverrides(StrictModel):
     heat_sources: list[VolumetricHeatSource] | None = Field(default=None, max_length=16)
     analysis_type: Literal["steady_state_conduction", "transient_conduction"] | None = None
     initial_temperature_k: float | None = Field(default=None, ge=1, le=5_000)
-    duration_s: float | None = Field(default=None, gt=0, le=31_536_000)
-    time_step_s: float | None = Field(default=None, gt=0, le=31_536_000)
+    duration_s: float | None = Field(default=None, gt=0, le=3_600)
+    time_step_s: float | None = Field(default=None, gt=0, le=3_600)
     """用户可选的稳态导热参数；空字段继续使用规划器的选择。"""
 
     material_name: str | None = Field(default=None, min_length=1, max_length=100)
@@ -834,6 +835,7 @@ class ModelingProposal(StrictModel):
 
 class ModelingSession(StrictModel):
     messages: list[ModelingMessage] = Field(default_factory=list, max_length=40)
+    questions: list[str] = Field(default_factory=list, max_length=3)
     proposal: ModelingProposal | None = None
     undo_plan: SimulationPlan | None = None
     suggested_fields: list[str] = Field(default_factory=list, max_length=40)
@@ -998,7 +1000,7 @@ class MeshReviewRequest(StrictModel):
 class MeshQualityMetrics(StrictModel):
     """Deterministic quality metrics for the generated voxel mesh."""
 
-    element_type: Literal["voxel_hexahedron"] = "voxel_hexahedron"
+    element_type: Literal["voxel_hexahedron", "tetrahedron"] = "voxel_hexahedron"
     cell_volume_mm3: float = Field(gt=0)
     maximum_aspect_ratio: float = Field(ge=1)
     maximum_skewness: float = Field(ge=0, le=1)
@@ -1017,12 +1019,12 @@ class MeshRecord(StrictModel):
     study_id: str
     workpiece_id: str
     generated_at: datetime = Field(default_factory=utc_now)
-    generator: Literal["voxel_mesher_v1"] = "voxel_mesher_v1"
+    generator: Literal["voxel_mesher_v1", "tetra_mesher_v1"] = "voxel_mesher_v1"
     generator_version: Literal["1.0"] = "1.0"
     plan_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     geometry_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pitch_mm: float = Field(gt=0)
-    domain_mode: Literal["enclosed_volume", "reconstructed_open_surface"]
+    domain_mode: Literal["enclosed_volume", "reconstructed_open_surface", "conforming_tetrahedra"]
     grid: dict[str, int]
     active_cells: int = Field(ge=1)
     surface_cells: int = Field(ge=1)
@@ -1045,7 +1047,7 @@ class TemperatureFieldPreview(StrictModel):
     """用于网页温度云图与剖切视图的体素降采样。"""
 
     sampling: Literal[
-        "surface_voxel_centers", "surface_and_volume_voxel_centers"
+        "surface_voxel_centers", "surface_and_volume_voxel_centers", "surface_and_volume_cell_centers"
     ] = "surface_and_volume_voxel_centers"
     pitch_mm: float = Field(gt=0)
     total_surface_cells: int = Field(ge=1)
@@ -1065,7 +1067,7 @@ class TemperatureFieldPreview(StrictModel):
 class HeatFluxFieldPreview(StrictModel):
     """用于网页热流矢量视图的表面体素降采样。"""
 
-    sampling: Literal["surface_voxel_centers"] = "surface_voxel_centers"
+    sampling: Literal["surface_voxel_centers", "surface_cell_centers"] = "surface_voxel_centers"
     pitch_mm: float = Field(gt=0)
     total_surface_cells: int = Field(ge=1)
     minimum_magnitude_w_m2: float = Field(ge=0)

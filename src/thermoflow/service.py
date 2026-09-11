@@ -39,14 +39,14 @@ from .models import (
     Quantity,
     SimulationOverrides,
     SimulationPlan,
+    SimulationPoint3D,
     SimulationResult,
     SimulationSpec,
-    SimulationPoint3D,
     StudyComparisonRequest,
     StudyComparisonResponse,
+    StudyConfirmationRequest,
     StudyCopyRequest,
     StudyDifferenceSummary,
-    StudyConfirmationRequest,
     StudyRecord,
     StudyStatus,
     TemperatureDifferenceField,
@@ -56,16 +56,17 @@ from .models import (
 from .planner import PlannerUnavailableError, SimulationPlanner, apply_user_overrides
 from .policy import validate_plan
 from .regions import SURFACE_CONDITION_KINDS
+from .solvers import AnalyticBoxSolver, VoxelStlSolver
+from .solvers.tetra_stl import TetraStlSolver
 from .specification import (
     build_simulation_spec,
     simulation_plan_sha256,
     simulation_spec_sha256,
     validate_spec_plan_alignment,
 )
-from .solvers import AnalyticBoxSolver, VoxelStlSolver
 from .stl_geometry import inspect_stl, load_stl_mesh, remove_stl_component
 from .storage import FileRepository
-
+from .tetrahedral import generate_tetra_mesh_record
 
 _TERMINAL_TASK_STATES = {
     "succeeded", "needs_review", "cancelled", "failed", "timed_out", "interrupted",
@@ -84,6 +85,7 @@ class StudyService:
         self.planner = planner
         self.geometry = geometry
         self.solvers = {
+            TetraStlSolver.solver_id: TetraStlSolver(compute_backend=compute_backend),
             AnalyticBoxSolver.solver_id: AnalyticBoxSolver(),
             VoxelStlSolver.solver_id: VoxelStlSolver(compute_backend=compute_backend),
         }
@@ -108,12 +110,13 @@ class StudyService:
         project_id: str,
         request: ProjectUpdateRequest,
     ) -> ProjectRecord:
-        project = self.repository.get_project(project_id)
-        updated = project.model_copy(
-            update={"name": request.name, "updated_at": datetime.now(timezone.utc)}
-        )
-        self.repository.save_project(updated)
-        return updated
+        with self.repository.project_lock(project_id):
+            project = self.repository.get_project(project_id)
+            updated = project.model_copy(
+                update={"name": request.name, "updated_at": datetime.now(timezone.utc)}
+            )
+            self.repository.save_project(updated)
+            return updated
 
     def delete_project(self, project_id: str) -> dict[str, object]:
         """Delete a project and every persisted record owned by it."""
@@ -461,16 +464,32 @@ class StudyService:
         workpiece = self.repository.get_workpiece(workpiece_id)
         if workpiece.cad_format is not CadFormat.STL or workpiece.source_dimensions is None:
             raise ValueError("只有已解析的 STL 工件需要确认长度单位")
+        if workpiece.unit_confirmed and workpiece.length_unit == unit:
+            return workpiece
         existing_studies = self.repository.list_studies(workpiece_id=workpiece_id)
         if existing_studies:
             raise ValueError("该工件已经存在研究，不能再修改几何尺度；请重新导入 STL")
 
         scale = unit.scale_to_mm
+        # Validate before touching either the normalized file or persisted metadata.
+        # model_copy(update=...) skips validation and can make every subsequent list fail.
+        dimensions = workpiece.source_dimensions
+        try:
+            dimensions_mm = DimensionsMM(
+                x=dimensions.x * scale, y=dimensions.y * scale, z=dimensions.z * scale,
+            )
+        except ValueError as exc:
+            raise ValueError("该单位换算后的尺寸超出支持范围（每轴最长 1,000,000 mm），请检查文件单位") from exc
         source_path = self.repository.workpiece_dir(workpiece_id) / "source.stl"
         normalized_path = self.repository.workpiece_dir(workpiece_id) / "source_mm.stl"
         mesh = load_stl_mesh(source_path)
         mesh.apply_scale(scale)
-        normalized_path.write_bytes(mesh.export(file_type="stl"))
+        normalized_temp = normalized_path.with_suffix(".stl.unit.tmp")
+        try:
+            normalized_temp.write_bytes(mesh.export(file_type="stl"))
+            os.replace(normalized_temp, normalized_path)
+        finally:
+            normalized_temp.unlink(missing_ok=True)
 
         summary = _scale_geometry_summary(workpiece.geometry.summary, scale, unit)
         faces = [
@@ -500,16 +519,9 @@ class StudyService:
             for face in workpiece.geometry.faces
         ]
         now = datetime.now(timezone.utc)
-        dimensions = workpiece.source_dimensions
         confirmed = workpiece.model_copy(
             update={
-                "dimensions_mm": dimensions.model_copy(
-                    update={
-                        "x": dimensions.x * scale,
-                        "y": dimensions.y * scale,
-                        "z": dimensions.z * scale,
-                    }
-                ),
+                "dimensions_mm": dimensions_mm,
                 "stored_filename": "source_mm.stl",
                 "length_unit": unit,
                 "unit_confirmed": True,
@@ -651,7 +663,7 @@ class StudyService:
             raise ValueError("已确认研究不能直接改写，请复制后修改并重新确认")
         if study.modeling.proposal is not None:
             raise ValueError("请先应用或放弃待处理的建模建议，再确认输入")
-        if study.status not in {StudyStatus.NEEDS_INPUT, StudyStatus.PLANNED} or study.plan is None:
+        if study.status not in {StudyStatus.NEEDS_INPUT, StudyStatus.PLANNED, StudyStatus.REJECTED} or study.plan is None:
             raise ValueError("只有尚未求解的草案可以确认")
         if not request.materials_confirmed:
             raise ValueError("请明确确认每个组件的材料及热物性后再确认仿真输入")
@@ -720,7 +732,7 @@ class StudyService:
     def _generate_mesh(self, study_id: str, monitor: ExecutionMonitor) -> MeshRecord:
         monitor.report("validating", 0)
         study = self.repository.get_study(study_id)
-        if study.status not in {StudyStatus.PLANNED, StudyStatus.READY}:
+        if study.status not in {StudyStatus.PLANNED, StudyStatus.READY, StudyStatus.FAILED}:
             raise ValueError("只有尚未求解且输入已确认的研究可以生成网格")
         if study.confirmation.status != "confirmed" or study.plan is None or study.policy is None:
             raise ValueError("请先确认仿真输入，再生成网格")
@@ -729,7 +741,7 @@ class StudyService:
         workpiece = self.get_workpiece(study.workpiece_id)
         from .regions import assert_confirmed_regions
         assert_confirmed_regions(study, workpiece)
-        if study.plan.solver.backend != "voxel_stl_v1":
+        if study.plan.solver.backend not in {"voxel_stl_v1", "tetra_stl_v1"}:
             raise ValueError("当前研究使用解析求解器，不需要生成体素网格")
 
         plan_snapshot = _study_input_snapshot_sha256(study)
@@ -738,6 +750,7 @@ class StudyService:
         generating = study.model_copy(
             update={
                 "updated_at": datetime.now(timezone.utc),
+                "status": StudyStatus.READY if study.status == StudyStatus.FAILED else study.status,
                 "mesh_status": MeshStatus.GENERATING,
                 "mesh_snapshot_sha256": None,
                 "mesh_failure": None,
@@ -745,7 +758,8 @@ class StudyService:
         )
         self.repository.save_study(generating)
         try:
-            mesh = generate_voxel_mesh_record(
+            generator = generate_tetra_mesh_record if study.plan.solver.backend == "tetra_stl_v1" else generate_voxel_mesh_record
+            mesh = generator(
                 study_id=study.study_id,
                 workpiece=workpiece,
                 plan=study.plan,
@@ -837,17 +851,19 @@ class StudyService:
     def _run_study(self, study_id: str, monitor: ExecutionMonitor) -> StudyRecord:
         monitor.report("validating", 0)
         study = self.repository.get_study(study_id)
-        if study.status not in {StudyStatus.PLANNED, StudyStatus.READY}:
+        if study.status not in {StudyStatus.PLANNED, StudyStatus.READY, StudyStatus.FAILED}:
             raise ValueError(f"研究必须已准备求解；当前状态为 {study.status.value}")
-        if study.status is StudyStatus.READY and study.confirmation.status != "confirmed":
+        if study.confirmation.status != "confirmed":
             raise ValueError("仿真输入尚未由用户确认")
         if study.plan is None or study.policy is None:
             raise ValueError("研究没有可执行的仿真方案")
+        if not study.policy.accepted:
+            raise ValueError("仿真方案未通过确定性校验，不能求解")
         workpiece = self.get_workpiece(study.workpiece_id)
         from .regions import assert_confirmed_regions
         assert_confirmed_regions(study, workpiece)
         mesh = None
-        if study.plan.solver.backend == "voxel_stl_v1":
+        if study.plan.solver.backend in {"voxel_stl_v1", "tetra_stl_v1"}:
             if study.mesh_status is not MeshStatus.READY:
                 raise ValueError("请先生成并检查真实网格，再开始求解")
             mesh = self.repository.get_mesh(study.study_id)
@@ -868,7 +884,7 @@ class StudyService:
             if hashlib.sha256(mesh_artifact.read_bytes()).hexdigest() != mesh.artifacts[0].sha256:
                 raise ValueError("网格文件校验失败，请重新生成")
         running = study.model_copy(
-            update={"status": StudyStatus.RUNNING, "updated_at": datetime.now(timezone.utc)}
+            update={"status": StudyStatus.RUNNING, "failure": None, "updated_at": datetime.now(timezone.utc)}
         )
         self.repository.save_study(running)
         try:
@@ -989,13 +1005,13 @@ class StudyService:
             project_id=project.project_id,
             created_at=now,
             updated_at=now,
-            status=StudyStatus.NEEDS_INPUT if policy.accepted else StudyStatus.REJECTED,
+            status=StudyStatus.NEEDS_INPUT,
             overrides=request.overrides,
             plan=plan,
             simulation_spec=simulation_spec,
             planner=base.planner,
             policy=policy,
-            failure=None if policy.accepted else "复制后的方案未通过确定性策略校验。",
+            failure=None,
             purpose=purpose,
             confirmation=confirmation,
         )
@@ -1109,18 +1125,22 @@ class StudyService:
         return self.create_project(ProjectCreateRequest(name=default_name))
 
     def _attach_workpiece(self, project: ProjectRecord, workpiece_id: str) -> ProjectRecord:
-        workpiece_ids = list(project.workpiece_ids)
-        if workpiece_id not in workpiece_ids:
-            workpiece_ids.append(workpiece_id)
-        updated = project.model_copy(
-            update={
-                "workpiece_ids": workpiece_ids,
-                "active_workpiece_id": workpiece_id,
-                "updated_at": datetime.now(timezone.utc),
-            }
-        )
-        self.repository.save_project(updated)
-        return updated
+        # Imports can inspect geometry concurrently. Merge against the current
+        # project so one completed upload cannot erase another geometry version.
+        with self.repository.project_lock(project.project_id):
+            current = self.repository.get_project(project.project_id)
+            workpiece_ids = list(current.workpiece_ids)
+            if workpiece_id not in workpiece_ids:
+                workpiece_ids.append(workpiece_id)
+            updated = current.model_copy(
+                update={
+                    "workpiece_ids": workpiece_ids,
+                    "active_workpiece_id": workpiece_id,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            )
+            self.repository.save_project(updated)
+            return updated
 
     def _project_for_workpiece(self, workpiece: WorkpieceRecord) -> ProjectRecord:
         if workpiece.project_id is not None:
@@ -1138,15 +1158,16 @@ class StudyService:
         return self.repository.get_project(project.project_id)
 
     def _touch_project(self, project_id: str, workpiece_id: str | None = None) -> None:
-        project = self.repository.get_project(project_id)
-        active_workpiece_id = workpiece_id or project.active_workpiece_id
-        updated = project.model_copy(
-            update={
-                "active_workpiece_id": active_workpiece_id,
-                "updated_at": datetime.now(timezone.utc),
-            }
-        )
-        self.repository.save_project(updated)
+        with self.repository.project_lock(project_id):
+            project = self.repository.get_project(project_id)
+            active_workpiece_id = workpiece_id or project.active_workpiece_id
+            updated = project.model_copy(
+                update={
+                    "active_workpiece_id": active_workpiece_id,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            )
+            self.repository.save_project(updated)
 
     def _ensure_workpiece_regions(self, workpiece: WorkpieceRecord) -> WorkpieceRecord:
         if workpiece.regions and all(
@@ -1463,16 +1484,23 @@ def _cad_format(filename: str) -> CadFormat:
 
 def _scale_geometry_summary(summary: dict[str, object], scale: float, unit: LengthUnit) -> dict[str, object]:
     scaled = dict(summary)
+    coordinate_system = summary.get("coordinate_system", {})
+    previous_scale = (
+        float(coordinate_system.get("scale_to_mm", 1.0))
+        if isinstance(coordinate_system, dict) else 1.0
+    )
+    relative_scale = scale / previous_scale
     bbox = scaled.get("bbox")
     if isinstance(bbox, list) and len(bbox) == 6:
-        scaled["bbox"] = [float(value) * scale for value in bbox]
+        scaled["bbox"] = [float(value) * relative_scale for value in bbox]
     if isinstance(scaled.get("area"), (int, float)):
-        scaled["area"] = float(scaled["area"]) * scale**2
+        scaled["area"] = float(scaled["area"]) * relative_scale**2
     if isinstance(scaled.get("volume"), (int, float)):
-        scaled["volume"] = float(scaled["volume"]) * scale**3
+        scaled["volume"] = float(scaled["volume"]) * relative_scale**3
     center = scaled.get("center_of_mass_source", scaled.get("center_of_mass_mm"))
     if isinstance(center, list) and len(center) == 3:
-        scaled["center_of_mass_mm"] = [float(value) * scale for value in center]
+        center_scale = scale if "center_of_mass_source" in scaled else relative_scale
+        scaled["center_of_mass_mm"] = [float(value) * center_scale for value in center]
     preview = scaled.get("preview")
     source_vertices = (
         preview.get("vertices_source", preview.get("vertices_mm"))
@@ -1480,10 +1508,11 @@ def _scale_geometry_summary(summary: dict[str, object], scale: float, unit: Leng
         else None
     )
     if isinstance(preview, dict) and isinstance(source_vertices, list):
+        vertex_scale = scale if "vertices_source" in preview else relative_scale
         scaled["preview"] = {
             **preview,
             "vertices_mm": [
-                [float(coordinate) * scale for coordinate in vertex]
+                [float(coordinate) * vertex_scale for coordinate in vertex]
                 for vertex in source_vertices
             ],
         }

@@ -79,7 +79,7 @@ const defaultWindow = model.longTransientWindow({
 assert.deepEqual(JSON.parse(JSON.stringify(defaultWindow)), {
   initialTemperature: 293.15,
   duration: 60,
-  timeStep: 1,
+  timeStep: 0.3,
 });
 
 const extendedWindow = model.longTransientWindow({
@@ -90,8 +90,14 @@ const extendedWindow = model.longTransientWindow({
 });
 assert.deepEqual(JSON.parse(JSON.stringify(extendedWindow)), {
   initialTemperature: 420,
-  duration: 60,
-  timeStep: 1,
-}, "Extending a short study must also keep the timeline within the 200-step solver limit");
+  duration: 2,
+  timeStep: 0.25,
+}, "Opening the editor must preserve the user-selected duration and integration limit");
+
+for (const duration of [0.1, 5, 60, 600, 3600]) {
+  const configured = model.longTransientWindow({ duration_s: duration, time_step_s: duration / 200 });
+  assert.equal(configured.duration, duration);
+  assert.equal(configured.timeStep, duration / 200);
+}
 
 console.log("Multiple-source editor model and long transient defaults passed");

@@ -112,6 +112,15 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
     source_active = bool(heat_sources) and plan.heat_source_enabled
     expected_backend = "voxel_stl_v1" if is_stl or (is_box and source_active) else "analytic_box_v1"
     is_voxel = plan.solver.backend == "voxel_stl_v1"
+    is_tetra = plan.solver.backend == "tetra_stl_v1"
+    if is_tetra and is_stl:
+        expected_backend = "tetra_stl_v1"
+        if not all(c.watertight for c in workpiece.components):
+            errors.append("贴合表面的四面体网格需要封闭 STL 组件。")
+        if plan.analysis_type != "transient_conduction" or plan.boundaries or plan.surface_conditions or plan.contacts:
+            errors.append("四面体求解器当前支持瞬态导热、内部热源和全局对流；局部边界与热接触请使用体素网格。")
+        if source_active and any(s.embedding_depth_mm > 0 for s in heat_sources):
+            errors.append("四面体热源暂不支持指定嵌入深度，请设为 0 并通过坐标定位。")
     if plan.solver.backend != expected_backend:
         errors.append(f"该工件必须使用已注册求解器 {expected_backend}。")
     transient = plan.analysis_type == "transient_conduction"
@@ -136,7 +145,10 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
                     fields=[field],
                 )
         if plan.duration_s is not None and plan.time_step_s is not None:
-            maximum_step_intervals = math.ceil(plan.duration_s / plan.time_step_s)
+            # Exact 200-interval settings such as 57 / 0.285 can round up by one ULP.
+            maximum_step_intervals = math.ceil(
+                math.nextafter(plan.duration_s / plan.time_step_s, -math.inf)
+            )
             if plan.time_step_s > plan.duration_s:
                 _record_issue(
                     errors,
@@ -180,7 +192,7 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
                 }
             )
             warnings.append(
-                "瞬态采用一阶隐式时间积分和材料扩散率自适应真实输出帧；"
+                ("四面体瞬态采用一阶隐式积分，保存 201 个等间隔真实时刻；" if is_tetra else "瞬态采用一阶隐式时间积分和材料扩散率自适应真实输出帧；") +
                 "确认的时间步长是内部积分上限，仍需减小该上限比较时间离散误差。"
             )
 
@@ -467,7 +479,7 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
             fields=["boundaries.0.temperature_k", "boundaries.1.temperature_k"],
         )
 
-    if is_voxel and source_active:
+    if (is_voxel or is_tetra) and source_active:
         bbox = workpiece.geometry.summary.get("bbox")
         if is_box:
             bbox = [0, 0, 0, *workpiece.dimensions_mm.as_tuple()]
@@ -601,7 +613,7 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
     for axis, length in zip(("x", "y", "z"), dimensions.as_tuple(), strict=True):
         requested = max(2, math.ceil(length / effective_pitch))
         intervals[axis] = min(requested, plan.mesh.max_axis_intervals)
-        if requested > plan.mesh.max_axis_intervals:
+        if requested > plan.mesh.max_axis_intervals and not is_tetra:
             _record_issue(
                 errors,
                 warnings,
@@ -631,6 +643,13 @@ def validate_plan(workpiece: WorkpieceRecord, plan: SimulationPlan) -> PolicyRep
         )
         if min(intervals.values()) < 4:
             warnings.append("至少一个包围盒方向少于 4 个区间，局部几何分辨率较低。")
+    elif is_tetra:
+        # Estimate only; the mesher enforces limits against the actual output.
+        triangles = sum(c.triangle_count for c in workpiece.components)
+        cells = max(3 * triangles, math.ceil(abs(float(workpiece.geometry.summary.get("volume", 0))) * 6 / effective_pitch**3))
+        points = max(4, sum(c.vertex_count for c in workpiece.components))
+        derived.update({"effective_pitch_mm": effective_pitch, "grid_points": points, "cells": cells,
+                        "mesh_estimate_only": True})
     else:
         points = math.prod(value + 1 for value in intervals.values())
         cells = math.prod(intervals.values())

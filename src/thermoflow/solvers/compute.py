@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any
 
@@ -13,6 +14,21 @@ class SparseSolveOutcome:
     backend: str
     device: str | None = None
     fallback_reason: str | None = None
+
+
+@contextmanager
+def limit_worker_blas_threads():
+    """Keep short sparse-CG vector operations from spawning a many-core BLAS team.
+
+    This is entered only in an isolated computation worker. Load both linked
+    BLAS libraries first so the scoped limit also covers SciPy's separate pool.
+    """
+    import numpy  # noqa: F401
+    import scipy.linalg  # noqa: F401
+    from threadpoolctl import threadpool_limits
+
+    with threadpool_limits(limits=1, user_api="blas"):
+        yield
 
 
 def compute_runtime(preference: str) -> dict[str, object]:

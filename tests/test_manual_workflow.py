@@ -50,9 +50,21 @@ def test_manual_upload_to_confirmed_transient_and_editable_copy(tmp_path):
         assert plan["analysis_type"] == "transient_conduction"
         assert plan["initial_temperature_k"] == pytest.approx(293.15)
         assert plan["duration_s"] == 60
+        assert plan["heat_source"] is None
+        assert plan["heat_sources"] == []
+        assert plan["heat_source_enabled"] is False
         assert plan["boundaries"] == [], "Do not invent a cold clamp on either end"
         assert plan["component_materials"][0]["material_id"] == "al-6061-t6"
         assert study["policy"]["accepted"], study["policy"]["errors"]
+        # An explicit user request must still be able to add a source to the empty draft.
+        heating = client.post("/v1/studies", json={
+            "workpiece_id": wid, "planning_mode": "manual",
+            "overrides": {"enable_heat_source": True, "heat_source_power_w": 3,
+                          "heat_source_x_mm": 0, "heat_source_y_mm": 0, "heat_source_z_mm": 0},
+        })
+        assert heating.status_code == 201, heating.text
+        assert heating.json()["plan"]["heat_source_enabled"] is True
+        assert heating.json()["plan"]["heat_sources"][0]["total_power_w"] == 3
         sid = study["study_id"]
         assert client.post(f"/v1/studies/{sid}/confirm", json={}).status_code == 409
         confirmed = client.post(f"/v1/studies/{sid}/confirm", json={"materials_confirmed": True})

@@ -26,10 +26,11 @@ from .specification import build_simulation_spec
 
 
 class ModelingService:
-    def __init__(self, service: StudyService, *, retain_history: bool = True):
+    def __init__(self, service: StudyService, *, retain_history: bool = True, planner=None):
         self.service = service
         self.repository = service.repository
         self.retain_history = retain_history
+        self.planner = planner
 
     def _editable(self, study_id: str, revision: int) -> StudyRecord:
         study = self.repository.get_study(study_id)
@@ -97,7 +98,7 @@ class ModelingService:
             history = study.modeling.messages if self.retain_history else request.session_history
             history = [*history[-38:], ModelingMessage(role="user", content=request.message)]
             try:
-                decision = self.service.planner.plan(
+                decision = (self.planner or self.service.planner).plan(
                     workpiece, user_description=request.message,
                     current_plan=study.plan.model_copy(deep=True), conversation=history,
                 )
@@ -111,18 +112,25 @@ class ModelingService:
             _validate_suggested_materials(study.plan, plan)
             policy = validate_plan(workpiece, plan)
             changes = describe_changes(study.plan, plan, workpiece)
-            questions = list(dict.fromkeys([*policy.errors, *plan.missing_information]))[:3]
-            content = "\n".join([plan.decision_summary, *questions])[:4_000]
+            questions = list(decision.questions) if decision.reply is not None else list(
+                dict.fromkeys([*policy.errors, *plan.missing_information]))[:3]
+            content = "\n".join([decision.reply or plan.decision_summary, *questions])[:4_000]
             history.append(ModelingMessage(role="assistant", content=content))
             with self.repository.study_lock(study_id):
                 current = self._editable(study_id, request.expected_revision)
                 if _modeling_geometry_sha256(self.service.get_workpiece(study.workpiece_id)) != geometry_hash:
                     raise ValueError("几何信息已更新，请基于当前几何重新提出建模请求")
                 revision = current.draft_revision + 1
+                # A clarification-only turn should allow the next answer immediately.
+                # Metadata alone does not require the user to apply an empty proposal.
+                substantive_changes = [change for change in changes
+                                       if change.field != "missing_information"]
+                needs_proposal = decision.reply is None or bool(substantive_changes)
                 session = current.modeling.model_copy(update={
                     "messages": history, "undo_plan": None, "undo_suggested_fields": [],
+                    "questions": questions,
                     "proposal": ModelingProposal(base_revision=revision, geometry_sha256=geometry_hash,
-                        plan=plan, changes=changes, validation_errors=policy.errors),
+                        plan=plan, changes=changes, validation_errors=policy.errors) if needs_proposal else None,
                 })
                 return self._save(current.model_copy(update={
                     "modeling": session, "draft_revision": revision, "planner": decision.provenance,
@@ -153,7 +161,8 @@ class ModelingService:
                     })
                 else:
                     updated = study.model_copy(update={"draft_revision": study.draft_revision + 1})
-                    session = session.model_copy(update={"proposal": None, "undo_plan": None, "undo_suggested_fields": []})
+                    session = session.model_copy(update={"proposal": None, "undo_plan": None,
+                        "undo_suggested_fields": [], "questions": []})
             notice = {"apply": "用户已将建议应用到待确认草案，尚未确认或求解。",
                       "dismiss": "用户已放弃建议，保留原草案。", "undo": "用户已撤销上一次应用的建议。"}[request.action]
             session = session.model_copy(update={"messages": [*session.messages[-39:], ModelingMessage(role="assistant", content=notice)]})
@@ -184,7 +193,7 @@ _LABELS = {
     "analyses": "物理场", "initial_temperature_k": "初始温度", "duration_s": "工作持续时间",
     "time_step_s": "时间步长", "material": "材料", "component_materials": "组件材料",
     "boundaries": "定温边界", "surface_conditions": "区域热边界", "contacts": "组件热接触", "heat_source_enabled": "启用局部热源",
-    "global_convection_enabled": "启用全局对流", "heat_source": "局部热源", "convection": "全局对流",
+    "global_convection_enabled": "启用全局对流", "heat_source": "局部热源", "heat_sources": "热源列表", "convection": "全局对流",
     "mesh": "网格", "solver": "求解设置", "criteria": "工程判据", "assumptions": "建模假设",
     "missing_information": "待补充信息", "unsupported_physics": "未支持效应", "kind": "类型",
     "name": "名称", "component_id": "组件", "material_id": "材料记录", "region_id": "区域",

@@ -31,7 +31,9 @@ def integrate_thermal_system(
     import numpy as np
     from scipy.sparse import diags
 
-    if not (0 < time_step_s <= duration_s) or math.ceil(duration_s / time_step_s) > 200:
+    if not (0 < time_step_s <= duration_s) or math.ceil(
+        math.nextafter(duration_s / time_step_s, -math.inf)
+    ) > 200:
         raise ValueError("瞬态时长或步长不符合资源限制")
     if np.any(capacity_j_k <= 0) or not np.isfinite(capacity_j_k).all():
         raise ValueError("所有瞬态单元必须具有有效的正热容")

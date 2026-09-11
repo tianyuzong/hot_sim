@@ -13,9 +13,10 @@ const context = vm.createContext({
   renderValidationFeedback: () => context.state.validationFailure
     ? [{severity: 'error', fields: []}] : selected.policy.issues,
   flushDraftBeforeNavigation: async () => true,
-  locateValidationFields() {}, showToast() {}, switchTab() {}, setBusy() {},
+  locateValidationFields() {}, showToast() {}, switchTab() {}, setBusy() {}, renderPrimaryAction() {},
   confirmedOverrides: () => ({}), loadWorkspace: async () => {}, submitComputation: async () => {},
   elements: {structuredInputs: {reportValidity: () => true}, confirmMaterials: {checked: true},
+    confirmInputs: {checked: true},
     componentMaterialList: {querySelectorAll: () => []}, studyPurpose: {value: ''}},
   request: async (url, options) => {
     if (options?.method === 'POST') {submissions++; return {};}

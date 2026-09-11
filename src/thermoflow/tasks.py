@@ -81,6 +81,13 @@ def run_task_worker(data_dir: str, task_id: str, compute_backend: str, parent_pi
             raise RuntimeError("无法设置计算进程生命周期")
         if os.getppid() != parent_pid:
             return
+    from .solvers.compute import limit_worker_blas_threads
+
+    with limit_worker_blas_threads():
+        _execute_task_worker(data_dir, task_id, compute_backend)
+
+
+def _execute_task_worker(data_dir: str, task_id: str, compute_backend: str):
     from .cadflow_adapter import CadFlowGeometryInspector
     from .planner import DeterministicPlanner
     from .service import StudyService, _study_input_snapshot_sha256
@@ -175,14 +182,14 @@ class TaskManager:
                 if existing.operation == request.operation and existing.status not in TERMINAL_TASK_STATES:
                     return existing
                 raise ValueError("该研究已有计算任务，请等待完成或取消")
-            if study.status not in {StudyStatus.PLANNED, StudyStatus.READY} or study.confirmation.status != "confirmed":
+            if study.status not in {StudyStatus.PLANNED, StudyStatus.READY, StudyStatus.FAILED} or study.confirmation.status != "confirmed":
                 raise ValueError("只有输入已确认且尚未求解的研究可以提交任务")
             if study.plan is None or study.policy is None or not study.policy.accepted:
                 raise ValueError("研究输入未通过校验")
             snapshot = _study_input_snapshot_sha256(study)
             if snapshot != study.input_snapshot_sha256:
                 raise ValueError("研究已确认输入发生变化，请重新确认")
-            uses_voxel_mesh = study.plan.solver.backend == "voxel_stl_v1"
+            uses_voxel_mesh = study.plan.solver.backend in {"voxel_stl_v1", "tetra_stl_v1"}
             if request.operation in {"mesh", "apply_and_solve"} and not uses_voxel_mesh:
                 raise ValueError("当前研究使用解析求解器，不需要网格任务")
             if request.operation == "solve" and uses_voxel_mesh and study.mesh_status != MeshStatus.READY:

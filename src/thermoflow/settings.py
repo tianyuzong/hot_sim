@@ -25,6 +25,10 @@ class Settings:
     codex_executable: str = "codex"
     codex_home: Path | None = None
     codex_timeout_seconds: int = 120
+    modeling_provider: str = "inherit"
+    glm_model: str = "glm-5.2"
+    glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"
+    glm_timeout_seconds: int = 60
 
     @classmethod
     def from_env(cls, project_root: Path | None = None) -> Settings:
@@ -56,6 +60,21 @@ class Settings:
         retain_history = os.getenv("THERMOFLOW_RETAIN_MODELING_HISTORY", "true").strip().lower()
         if retain_history not in {"true", "false"}:
             raise ValueError("THERMOFLOW_RETAIN_MODELING_HISTORY 必须为 true 或 false")
+        modeling_provider = os.getenv("THERMOFLOW_MODELING_PROVIDER", "inherit").strip().lower()
+        if modeling_provider not in {"inherit", "glm"}:
+            raise ValueError("THERMOFLOW_MODELING_PROVIDER 必须为 inherit 或 glm")
+        glm_model = os.getenv("THERMOFLOW_GLM_MODEL", "glm-5.2").strip()
+        glm_base_url = os.getenv(
+            "THERMOFLOW_GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"
+        ).strip()
+        from urllib.parse import urlsplit
+        glm_url = urlsplit(glm_base_url)
+        if (not glm_model or glm_url.scheme != "https" or not glm_url.hostname
+                or glm_url.username or glm_url.password or glm_url.query or glm_url.fragment):
+            raise ValueError("GLM 模型名不能为空，服务地址必须为不含凭据或查询参数的 HTTPS URL")
+        glm_timeout = int(os.getenv("THERMOFLOW_GLM_TIMEOUT_SECONDS", "60"))
+        if not 5 <= glm_timeout <= 180:
+            raise ValueError("GLM 响应超时必须为 5-180 秒")
         return cls(
             project_root=root,
             data_dir=data_dir,
@@ -73,6 +92,10 @@ class Settings:
             codex_executable=codex_executable,
             codex_home=_resolve_from_root(root, codex_home) if codex_home else None,
             codex_timeout_seconds=codex_timeout,
+            modeling_provider=modeling_provider,
+            glm_model=glm_model,
+            glm_base_url=glm_base_url,
+            glm_timeout_seconds=glm_timeout,
         )
 
 

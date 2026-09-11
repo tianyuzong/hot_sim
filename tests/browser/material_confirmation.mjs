@@ -14,6 +14,7 @@ const elements = {
 };
 const study = {
   study_id: "study-material-review",
+  plan: {},
   status: "needs_input",
   confirmation: { status: "needs_input" },
   modeling: { proposal: null },

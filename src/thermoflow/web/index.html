@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#171a1d" />
     <meta name="description" content="ThermoFlow 热仿真工作台与智能工程仿真平台" />
     <title>ThermoFlow 智能工程仿真平台</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260909-validation1" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260911-results3" />
   </head>
   <body>
     <div class="app-shell">
@@ -39,6 +39,7 @@
         <button id="geometryNav" type="button" class="is-active">几何</button>
         <button id="materialsNav" type="button">材料</button>
         <button id="scenarioNav" type="button">工况</button>
+        <button id="heatSourceNav" class="heat-source-nav" type="button" aria-controls="sourceEditor" aria-expanded="false">热源设置</button>
         <button id="meshNav" type="button">网格</button>
         <button id="solveNav" type="button">求解</button>
         <button id="resultNav" type="button">结果</button>
@@ -83,7 +84,13 @@
           </header>
 
           <section class="geometry-stage" aria-label="工件工程视图">
-            <canvas id="workpieceCanvas" tabindex="0" aria-label="STL 工件工程视图，可旋转模型、选择组件与边界区域、拖动热源或点选温度探针"></canvas>
+            <canvas id="workpieceCanvas" tabindex="0" aria-label="STL 工件工程视图，可悬停查看组件编号与材料、旋转模型、选择组件与边界区域、拖动热源或点选温度探针"></canvas>
+            <div id="componentHoverTooltip" class="component-hover-tooltip" role="tooltip" hidden>
+              <strong id="componentHoverName"></strong>
+              <span id="componentHoverMaterial"></span>
+              <span id="componentHoverConductivity"></span>
+              <small id="componentHoverHint"></small>
+            </div>
             <div class="viewport-overlay">
             <div class="viewport-tools">
               <select id="standardView" aria-label="标准视角" title="标准视角">
@@ -91,7 +98,7 @@
                 <option value="right">右视</option><option value="top">俯视</option>
               </select>
               <label>透明度<input id="geometryOpacity" aria-label="几何不透明度" type="range" min="0.15" max="1" step="0.05" value="1"></label>
-              <button id="focusMaximum" type="button" title="定位最高温度" aria-label="定位最高温度">T↑</button>
+              <button id="focusMaximum" type="button" disabled title="完成仿真并读取结果后可定位最高温度" aria-label="定位最高温度">T↑</button>
               <select id="geometrySelectionMode" aria-label="选择对象" title="选择对象">
                 <option value="component">组件</option><option value="faces">三角面</option>
               </select>
@@ -139,14 +146,14 @@
               <small id="diffusionReference" hidden></small>
             </div>
             <output class="temperature-probe" id="probeReadout" aria-live="polite" hidden></output>
-            <button class="source-edit-toggle" id="sourceEditButton" type="button" title="编辑热源" aria-label="编辑热源" hidden>
-              <span aria-hidden="true"></span>
+            <button class="source-edit-toggle" id="sourceEditButton" type="button" title="热源设置" aria-label="热源设置" aria-controls="sourceEditor" aria-expanded="false" hidden>
+              <span aria-hidden="true"></span><b>热源设置</b>
             </button>
             <button class="view-reset" id="resetViewButton" type="button" title="重置视角" aria-label="重置视角" hidden>↺</button>
-            <form class="source-editor" id="sourceEditor" hidden>
+            <form class="source-editor" id="sourceEditor" aria-label="热源设置" hidden>
               <header>
                 <div>
-                  <span>热源参数</span>
+                  <span>热源设置 · 功率与位置</span>
                   <output id="sourcePositionReadout">—</output>
                 </div>
                 <button id="closeSourceEditorButton" type="button" title="关闭热源参数" aria-label="关闭热源参数">×</button>
@@ -157,6 +164,14 @@
                 <button id="deleteHeatSource" type="button">删除当前热源</button>
               </div>
               <div class="source-editor-grid">
+                <label id="canvasDurationField">
+                  <span>仿真时长（≤3600）<i>s</i></span>
+                  <input id="canvasDuration" type="number" min="0.000000001" max="3600" step="any" required />
+                </label>
+                <label id="canvasTimeStepField">
+                  <span>时间步长 <i>s</i></span>
+                  <input id="canvasTimeStep" type="number" min="0.000000001" max="3600" step="any" required />
+                </label>
                 <label class="source-editor-wide">
                   <span>名称</span>
                   <input id="canvasSourceName" type="text" maxlength="80" required />
@@ -253,17 +268,10 @@
                   <span>对流换热系数 <i>W/(m²·K)</i></span>
                   <input id="canvasConvectionCoefficient" type="number" min="0.000001" max="1000000" step="any" required />
                 </label>
-                <label id="canvasDurationField">
-                  <span>仿真时长 <i>s</i></span>
-                  <input id="canvasDuration" type="number" min="0.000000001" max="31536000" step="any" required />
-                </label>
-                <label id="canvasTimeStepField">
-                  <span>时间步长 <i>s</i></span>
-                  <input id="canvasTimeStep" type="number" min="0.000000001" max="31536000" step="any" required />
-                </label>
               </div>
+              <p id="canvasConvectionNotice" class="source-editor-hint" hidden>全局对流未启用；环境温度和对流系数暂不参与计算。可在工况中开启全局对流。</p>
               <footer>
-                <button class="source-reset-button" id="resetSourceButton" type="button" title="恢复当前方案" aria-label="恢复当前方案">↶</button>
+                <button class="source-reset-button" id="resetSourceButton" type="button" title="撤销本次热源编辑" aria-label="撤销本次热源编辑">↶</button>
                 <button class="source-apply-button" id="applySourceButton" type="submit">应用到草案</button>
               </footer>
             </form>
@@ -273,6 +281,7 @@
             <button id="timePlay" type="button" title="播放时间步" aria-label="播放时间步">▶</button>
             <input id="timePosition" type="range" min="0" max="1" step="1" value="0" aria-label="结果时间步" />
             <output id="timeLabel" for="timePosition">0 s</output>
+            <button class="time-settings-button" id="simulationTimeButton" type="button">设置仿真时间</button>
             <span id="timeLoading" class="time-loading" role="status" hidden>读取真实温度场…</span>
             <label><input id="timeLockScale" type="checkbox" checked disabled /> 全时段固定色标</label>
           </div>
@@ -375,8 +384,9 @@
                   <button class="primary-button" id="materialsCreateDraftButton" type="button">生成可编辑仿真草案</button>
                   <button class="secondary-button" id="materialsGoScenario" type="button">去工况填写用途</button>
                 </div>
-                <div class="component-materials" id="componentMaterialList"></div>
+                <p class="editor-hint">每个组件独立设置材料名称、导热系数、密度和比热容，修改会自动保存。鼠标悬停模型可查看组件编号与材料，点击可定位到对应材料。候选值需按实际材料核对。</p>
                 <button class="primary-button" id="editMaterialsButton" type="button" hidden>修改材料与物性（保留原结果）</button>
+                <div class="component-materials" id="componentMaterialList"></div>
                 <div class="notice notice-warning" id="materialConfirmationNotice" hidden>
                   正式求解前必须逐组件核对材料及热物性。规划器给出的材料只是候选值，不代表已经得到用户确认。
                 </div>
@@ -409,17 +419,17 @@
                 <button class="primary-button" id="manualDraftButton" type="button">直接设置材料与热源（无需 AI）</button>
                 <button class="primary-button" id="editParametersButton" type="button" hidden>修改参数（保留原结果）</button>
                 <form class="structured-form" id="structuredInputs" hidden>
-                  <p class="editor-hint">温度输入单位为 K：20 ℃ = 293.15 K。结果色标使用 ℃。瞬态从初始温度开始，热源持续加热；未添加定温边界时没有固定冷热端。</p>
+                  <p class="editor-hint">温度输入单位为 K：20 ℃ = 293.15 K。结果色标使用 ℃。瞬态从初始温度开始，按已设置的热源和换热条件演化；热源需主动添加，未添加定温边界时没有固定冷热端。</p>
                   <div class="form-grid">
                     <label class="wide-field"><span>分析类型</span><select id="draftAnalysisType"><option value="steady_state_conduction">稳态导热</option><option value="transient_conduction">瞬态导热</option></select></label>
                     <label data-transient-field hidden><span>初始温度 <i>K</i></span><input id="draftInitialTemperature" type="number" min="1" max="5000" step="any" /></label>
-                    <label data-transient-field hidden><span>工作持续时间 <i>s</i></span><input id="draftDuration" type="number" min="0.000000001" max="31536000" step="any" /></label>
-                    <label data-transient-field hidden><span>时间步长 <i>s</i></span><input id="draftTimeStep" type="number" min="0.000000001" max="31536000" step="any" /></label>
+                    <label data-transient-field hidden><span>仿真总时长（最长 3600 秒）<i>s</i></span><input id="draftDuration" type="number" min="0.000000001" max="3600" step="any" /></label>
+                    <label data-transient-field hidden><span>时间步长 <i>s</i></span><input id="draftTimeStep" type="number" min="0.000000001" max="3600" step="any" /></label>
                     <label class="wide-field thermal-toggle"><input id="draftEnableHeatSource" type="checkbox" checked /><span>局部功率热源</span></label>
                     <label data-source-field><span>热源功率 <i>W</i></span><input id="draftSourcePower" type="number" min="0.000001" step="any" required /></label>
                     <label data-source-field><span>作用半径 <i>mm</i></span><input id="draftSourceRadius" type="number" min="0.000001" step="any" required /></label>
                     <div class="source-quick-actions" id="sourceQuickActions">
-                      <button class="secondary-button" id="openSourceEditorFromScenario" type="button">打开热源编辑器</button>
+                      <button class="secondary-button" id="openSourceEditorFromScenario" type="button">添加 / 设置热源</button>
                       <span>可新增多个热源，调整形状、位置、嵌入深度和功率</span>
                     </div>
                     <label class="wide-field thermal-toggle"><input id="draftEnableGlobalConvection" type="checkbox" checked /><span>未定温表面的全局对流</span></label>
@@ -455,17 +465,20 @@
                   <span class="confidence" id="meshRisk">待生成</span>
                 </div>
                 <div class="mesh-preview" id="meshPreview">
+                  <div><span>网格方法</span><select id="draftMeshMethod" aria-label="网格方法" disabled><option value="voxel_stl_v1">规则体素</option><option value="tetra_stl_v1">贴合表面四面体（薄壁）</option><option value="analytic_box_v1" hidden>解析长方体</option></select></div>
                   <div><span>目标单元尺寸</span><input id="draftMeshSize" aria-label="目标单元尺寸 mm" type="number" min="0.000001" step="any" disabled /><i>mm</i></div>
-                  <div><span>有效单元尺寸</span><strong id="effectiveMeshSize">—</strong><i>mm</i></div>
+                  <div><span id="effectiveMeshSizeLabel">有效单元尺寸</span><strong id="effectiveMeshSize">—</strong><i id="effectiveMeshSizeUnit">mm</i></div>
                   <div><span id="meshCellCountLabel">预计单元数</span><strong id="estimatedCells">—</strong></div>
                   <div><span id="meshPointCountLabel">预计网格点</span><strong id="estimatedPoints">—</strong></div>
                   <div><span>表面单元</span><strong id="surfaceCells">—</strong></div>
-                  <div><span>各轴活动层</span><strong id="occupiedLayers">—</strong></div>
+                  <div><span id="meshTypeLabel">各轴活动层</span><strong id="occupiedLayers">—</strong></div>
                   <div><span>组件连通性</span><strong id="meshConnectivity">—</strong></div>
                   <div><span>体积偏差</span><strong id="meshVolumeDeviation">—</strong></div>
                   <div><span>质量状态</span><strong id="meshQuality">—</strong></div>
                 </div>
                 <div class="notice" id="meshWarnings">生成草案后可检查网格规模与风险。</div>
+                <button type="button" class="secondary-button" id="repairThinMeshButton" hidden>复制工况，改用薄壁四面体网格</button>
+                <p class="notice">薄壁四面体适用于封闭 STL 的瞬态导热、坐标定位热源和全局对流；各组件保持独立。局部边界、指定嵌入深度和热接触请使用规则体素。</p>
                 <dl class="inspector-list" id="boundaryMapping" hidden></dl>
                 <label class="confirmation-check" id="meshReviewCheck" hidden>
                   <input id="acceptMeshWarnings" type="checkbox" />
@@ -511,7 +524,10 @@
             <section id="resultPane" role="tabpanel" aria-labelledby="resultTab" hidden>
               <div class="inspector-empty" id="resultEmpty">
                 <span class="empty-index">结果</span>
-                <strong>尚无求解结果</strong>
+                <strong id="resultStatusTitle">尚无求解结果</strong>
+                <p id="resultStatusMessage">确认仿真输入后开始求解。</p>
+                <button id="retryResultButton" class="secondary-button" type="button" hidden>重新读取结果</button>
+                <button id="previousResultButton" class="secondary-button" type="button" hidden>查看上一项已完成结果</button>
               </div>
               <div id="resultContent" hidden>
                 <div class="inspector-title">
@@ -660,6 +676,11 @@
             </section>
           </div>
 
+          <div class="draft-recovery validation-feedback" id="draftRecovery" role="status" hidden>
+            <p id="draftRecoveryMessage"></p>
+            <button class="source-reset-button" id="retryDraftSave" type="button">重试保存</button>
+            <button class="source-reset-button" id="reloadDraftRecovery" type="button" hidden>载入服务器草案</button>
+          </div>
           <div class="validation-feedback" id="validationFeedback" role="region" aria-label="参数检查" hidden>
             <header><strong>参数检查</strong><a href="/assets/help.html#troubleshooting" target="_blank" rel="noopener">如何修改？</a></header>
             <p id="validationSummary" role="status"></p>
@@ -669,35 +690,61 @@
               <div class="validation-list" id="validationWarningList"></div>
             </details>
           </div>
-          <details class="modeling-drawer" id="modelingDrawer" hidden>
-            <summary>建模对话 <span id="draftSaveStatus" role="status">草案已保存</span></summary>
-            <div class="modeling-body">
-              <div id="modelingMessages" class="modeling-messages" aria-live="polite"></div>
-              <p id="modelingPrivacy" class="modeling-status" hidden>对话仅保留在当前页面会话；结构化草案仍会保存。</p>
-              <section id="modelingProposal" class="modeling-proposal" hidden>
-                <h3>待应用建议</h3>
-                <div id="modelingChanges"></div>
-                <ul id="modelingValidation"></ul>
-                <div class="modeling-actions">
-                  <button id="applyModeling" class="primary-button" type="button">应用到草案</button>
-                  <button id="dismissModeling" class="source-reset-button" type="button">放弃建议</button>
-                </div>
-              </section>
-              <form id="modelingForm" class="modeling-form">
-                <label for="modelingInput">补充条件或修改要求</label>
-                <textarea id="modelingInput" rows="2" maxlength="4000" required></textarea>
-                <div class="modeling-actions">
-                  <button id="undoModeling" class="icon-button" type="button" title="撤销上次应用的建议" aria-label="撤销上次应用的建议" hidden>↶</button>
-                  <button id="reloadDraft" class="source-reset-button" type="button" hidden>重新载入草案</button>
-                  <button id="sendModeling" class="primary-button" type="submit">发送</button>
-                </div>
-              </form>
-            </div>
-          </details>
           <div class="inspector-action">
             <button class="primary-button" id="primaryAction" type="button" disabled>选择工件</button>
           </div>
         </aside>
+        <aside class="modeling-sidebar" id="modelingDrawer" aria-labelledby="modelingSidebarTitle">
+          <header class="modeling-sidebar-header">
+            <div><span class="eyebrow">热仿真助手</span><h2 id="modelingSidebarTitle">参数 Agent</h2></div>
+            <button id="closeModelingSidebar" class="icon-button" type="button" aria-label="收起参数 Agent 侧边栏" title="收起侧边栏">›</button>
+          </header>
+          <div class="modeling-context">
+            <strong id="modelingContext">未选择仿真草案</strong>
+            <span id="draftSaveStatus" role="status">等待选择工件</span>
+          </div>
+          <div class="modeling-body">
+            <div class="modeling-provider-row">
+              <span id="modelingProvider" class="modeling-status" role="status"></span>
+              <button id="refreshModelingProvider" class="source-reset-button" type="button">重新检查</button>
+            </div>
+            <p id="modelingIntro" class="modeling-status">描述材料、热源、温度和时间，助手会整理参数并追问缺项。查看修改后点击“应用到草案”，再复核并确认仿真。</p>
+            <div id="modelingExamples" class="modeling-examples" aria-label="对话示例">
+              <button type="button" data-modeling-example="把初始温度和环境温度设为 25 ℃，仿真持续 120 秒，时间步长 1 秒。">设置温度和时间</button>
+              <button type="button" data-modeling-example="使用材料目录中的 6061-T6 铝合金，请保留其他设置。">选择材料</button>
+              <button type="button" data-modeling-example="请检查当前草案，还缺哪些热仿真参数？优先问我最关键的三项。">检查缺失参数</button>
+            </div>
+            <div id="modelingMessages" class="modeling-messages" aria-live="polite"></div>
+            <p id="modelingRequestStatus" class="modeling-status" role="status" hidden></p>
+            <section id="modelingQuestions" class="modeling-questions" hidden>
+              <strong>请补充</strong>
+              <ol id="modelingQuestionList"></ol>
+            </section>
+            <p id="modelingPrivacy" class="modeling-status" hidden>对话仅保留在当前页面会话；结构化草案仍会保存。</p>
+            <section id="modelingProposal" class="modeling-proposal" hidden>
+              <h3>待应用建议</h3>
+              <div id="modelingChanges"></div>
+              <ul id="modelingValidation"></ul>
+              <div class="modeling-actions">
+                <button id="applyModeling" class="primary-button" type="button">应用到草案</button>
+                <button id="dismissModeling" class="source-reset-button" type="button">放弃建议</button>
+              </div>
+            </section>
+          </div>
+          <form id="modelingForm" class="modeling-form" hidden>
+              <label for="modelingInput">补充条件或修改要求</label>
+              <textarea id="modelingInput" rows="3" maxlength="4000" placeholder="例如：初始温度 25 ℃，持续加热 2 分钟；请帮我填写参数并检查缺项。" required></textarea>
+              <div class="modeling-actions">
+                <button id="undoModeling" class="icon-button" type="button" title="撤销上次应用的建议" aria-label="撤销上次应用的建议" hidden>↶</button>
+                <button id="reloadDraft" class="source-reset-button" type="button" hidden>重新载入草案</button>
+                <button id="sendModeling" class="primary-button" type="submit">发送</button>
+              </div>
+          </form>
+        </aside>
+        <button class="modeling-sidebar-toggle" id="modelingNav" type="button" aria-controls="modelingDrawer" aria-expanded="false" aria-label="参数 Agent，拖动可移动，单击展开" title="拖动移动；单击打开 Agent。方向键微调，Home 恢复位置。">
+          <span aria-hidden="true">✦</span><span>Agent</span>
+        </button>
+        <button class="modeling-backdrop" id="modelingBackdrop" type="button" aria-label="关闭 Agent 侧边栏遮罩" tabindex="-1" hidden></button>
       </main>
     </div>
 
@@ -942,6 +989,25 @@
       </form>
     </dialog>
 
+    <dialog class="workpiece-dialog component-dialog" id="simulationTimeDialog" aria-labelledby="simulationTimeTitle">
+      <form id="simulationTimeForm">
+        <header class="dialog-heading">
+          <div><span class="eyebrow">瞬态仿真</span><h2 id="simulationTimeTitle">设置仿真时间</h2></div>
+          <button class="icon-button" id="closeSimulationTime" type="button" aria-label="关闭仿真时间设置">×</button>
+        </header>
+        <p class="editor-hint">设置从初始状态开始计算的总时长，最长 3600 秒（1 小时）。使用当前已保存的材料和热源生成新结果。</p>
+        <div class="form-grid">
+          <label class="wide-field"><span>仿真总时长 <i>s</i></span><input id="simulationDuration" type="number" min="0.000000001" max="3600" step="any" required /></label>
+          <label class="wide-field"><span>时间步长上限 <i>s</i></span><input id="simulationTimeStep" type="number" min="0.000000001" max="3600" step="any" required /></label>
+        </div>
+        <p class="editor-hint">修改总时长时，自动建议总时长 ÷ 200 的时间步长，也可手动调整。计算完成后可拖动时间条查看全过程。</p>
+        <footer class="dialog-actions">
+          <button class="secondary-button" id="cancelSimulationTime" type="button">取消</button>
+          <button class="primary-button" id="applySimulationTime" type="submit">按此时长重新仿真</button>
+        </footer>
+      </form>
+    </dialog>
+
     <dialog class="diagnostics-dialog" id="diagnosticsDialog">
       <header class="dialog-heading">
         <div><span class="eyebrow">高级诊断</span><h2>服务状态</h2></div>
@@ -956,9 +1022,10 @@
     </dialog>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/assets/source-editor-model.js?v=20260908-3" defer></script>
-    <script src="/assets/transient-display.js?v=20260909-flow1" defer></script>
-    <script src="/assets/validation-feedback.js?v=20260909-1" defer></script>
-    <script src="/assets/app.js?v=20260909-validation1" defer></script>
+    <script src="/assets/source-editor-model.js?v=20260911-results3" defer></script>
+    <script src="/assets/transient-display.js?v=20260911-results3" defer></script>
+    <script src="/assets/validation-feedback.js?v=20260911-results3" defer></script>
+    <script src="/assets/floating-button.js?v=20260911-results3" defer></script>
+    <script src="/assets/app.js?v=20260911-results3" defer></script>
   </body>
 </html>

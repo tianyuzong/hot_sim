@@ -190,7 +190,7 @@ export class EngineeringViewport {
     this.camera.up.set(0, 0, 1);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = false;
-    this.controls.addEventListener("change", () => this.render());
+    this.controls.addEventListener("change", () => { this.clearComponentHover(); this.render(); });
     this.geometryGroup = new THREE.Group();
     this.markerGroup = new THREE.Group();
     this.scene.add(this.geometryGroup, this.markerGroup);
@@ -206,7 +206,9 @@ export class EngineeringViewport {
     canvas.addEventListener("pointerdown", event => this.pointerDown(event), true);
     canvas.addEventListener("pointermove", event => this.pointerMove(event), true);
     canvas.addEventListener("pointerup", event => this.pointerUp(event), true);
-    canvas.addEventListener("pointercancel", () => { this.drag = null; this.controls.enabled = true; });
+    canvas.addEventListener("pointerleave", () => this.clearComponentHover());
+    canvas.addEventListener("blur", () => this.clearComponentHover());
+    canvas.addEventListener("pointercancel", () => { this.clearComponentHover(); this.drag = null; this.controls.enabled = true; });
     canvas.addEventListener("keydown", event => {
       if (event.key === "Home") { event.preventDefault(); this.fit(); }
     });
@@ -248,6 +250,7 @@ export class EngineeringViewport {
   }
 
   async updateScene(options) {
+    this.clearComponentHover();
     this.options = options;
     const { workpiece, study, result, mode } = options;
     if (!workpiece) {
@@ -637,6 +640,7 @@ export class EngineeringViewport {
   }
 
   pointerDown(event) {
+    this.clearComponentHover();
     this.pointerStart = [event.clientX, event.clientY];
     if (event.button !== 0) return;
     if (this.options.selectionMode === "faces") return;
@@ -660,8 +664,36 @@ export class EngineeringViewport {
     event.stopImmediatePropagation();
   }
 
+  clearComponentHover() {
+    if (this.hoverFrame != null) cancelAnimationFrame(this.hoverFrame);
+    this.hoverFrame = null;
+    this.hoverPointer = null;
+    this.callbacks.componentHover?.(null);
+  }
+
+  queueComponentHover(event) {
+    this.hoverPointer = { clientX: event.clientX, clientY: event.clientY };
+    if (this.hoverFrame != null) return;
+    this.hoverFrame = requestAnimationFrame(() => {
+      this.hoverFrame = null;
+      const pointer = this.hoverPointer;
+      if (!pointer || this.drag || !this.mesh || !this.surface) return this.clearComponentHover();
+      const hit = this.hits(pointer, this.geometryGroup).find(item => item.object === this.mesh);
+      // Filtered geometry uses compact face indices; map back to the original surface.
+      const triangle = hit ? this.mesh.geometry.userData.visibleTriangles[hit.faceIndex] : null;
+      const componentId = triangle == null ? null : this.surface.component_ids[triangle];
+      this.callbacks.componentHover?.(componentId
+        ? { componentId, ...pointer, options: this.options } : null);
+    });
+  }
+
   pointerMove(event) {
     if (!this.drag) {
+      if (event.buttons || event.pointerType === "touch") {
+        this.clearComponentHover();
+        this.canvas.title = "";
+        return;
+      }
       const hits = this.hits(event, this.markerGroup);
       const source = this.sourceHit(event);
       const marker = hits.find(hit => hit.object.userData.tooltip);
@@ -669,6 +701,8 @@ export class EngineeringViewport {
       this.canvas.title = source
         ? `拖动${source.object.userData.sourceName || "热源"}（单击可选择）`
         : marker?.object.userData.tooltip || "";
+      if (source || marker) this.clearComponentHover();
+      else this.queueComponentHover(event);
       return;
     }
     let position;
@@ -698,7 +732,10 @@ export class EngineeringViewport {
       return;
     }
     if (event.button !== 0) return;
-    if (!this.pointerStart || Math.hypot(event.clientX - this.pointerStart[0], event.clientY - this.pointerStart[1]) > 4) return;
+    if (!this.pointerStart || Math.hypot(event.clientX - this.pointerStart[0], event.clientY - this.pointerStart[1]) > 4) {
+      if (event.pointerType === "mouse") this.queueComponentHover(event);
+      return;
+    }
     const marker = this.options.selectionMode === "faces" ? null
       : this.hits(event, this.markerGroup).find(hit => hit.object.userData.regionId);
     if (marker) { this.callbacks.region(marker.object.userData.regionId); return; }

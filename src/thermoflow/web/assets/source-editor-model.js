@@ -110,6 +110,10 @@
   }
 
   function toPlanSource(draft) {
+    const usesRadius = draft.shape === "point" || draft.shape === "line";
+    const inactiveRadius = draft.shape === "surface"
+      ? Math.min(draft.surfaceWidth, draft.surfaceHeight, draft.surfaceThickness) / 2
+      : Math.min(draft.volumeWidth, draft.volumeHeight, draft.volumeDepth) / 2;
     return {
       kind: "volumetric_power",
       source_id: draft.sourceId,
@@ -118,8 +122,9 @@
       placement: draft.placement,
       center_mm: { ...draft.center },
       total_power_w: Number(draft.power),
-      radius_mm: Number(draft.radius),
-      embedding_depth_mm: Number(draft.embeddingDepth),
+      radius_mm: usesRadius ? Number(draft.radius)
+        : Number(draft.radius) > 0 ? Number(draft.radius) : Math.max(numeric(inactiveRadius, 1), 0.000001),
+      embedding_depth_mm: draft.placement === "embedded" ? Number(draft.embeddingDepth) : 0,
       end_mm: draft.shape === "line" ? { ...draft.end } : null,
       surface_normal_axis: draft.shape === "surface" ? draft.surfaceAxis : null,
       surface_width_mm: draft.shape === "surface" ? Number(draft.surfaceWidth) : null,
@@ -142,14 +147,11 @@
   }
 
   function longTransientWindow(plan) {
-    const requestedDuration = numeric(plan?.duration_s, 60);
-    const duration = Math.max(requestedDuration, 60);
-    const requestedTimeStep = numeric(plan?.time_step_s, duration / 60);
-    const minimumTimeStep = duration > requestedDuration ? duration / 60 : duration / 200;
+    const duration = numeric(plan?.duration_s, 60);
     return {
       initialTemperature: numeric(plan?.initial_temperature_k, 293.15),
       duration,
-      timeStep: Math.max(requestedTimeStep, minimumTimeStep, 1e-6),
+      timeStep: numeric(plan?.time_step_s, duration / 200),
     };
   }
 

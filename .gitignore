@@ -17,3 +17,6 @@ build/
 packages/*.tar.gz
 data/*
 !data/.gitkeep
+.backups/
+.env.*
+!.env.example

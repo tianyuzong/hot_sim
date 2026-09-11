@@ -34,6 +34,12 @@ const state = {
   boundaryMarkers: [],
   mesh: null,
   result: null,
+  resultRequest: 0,
+  resultLoading: false,
+  resultError: null,
+  playbackLoading: false,
+  playbackError: null,
+  playbackController: null,
   timeFrame: null,
   timeIndex: 0,
   timeRequest: 0,
@@ -57,6 +63,8 @@ const state = {
   sourcePreviewDirty: false,
   sourceMarker: null,
   pendingUploadOverrides: null,
+  pendingInputTarget: null,
+  inputPreparationPromise: null,
   visualizationMode: ["model", "mesh", "diffusion", "thermal", "flux", "contour", "slice"].includes(
     restoredWorkspace.visualizationMode,
   ) ? restoredWorkspace.visualizationMode : "thermal",
@@ -78,7 +86,12 @@ const state = {
   draftSaveTimer: null,
   draftSavePromise: null,
   draftSaveError: false,
+  draftSaveConflict: false,
+  workspaceRequest: 0,
+  navigationRequest: 0,
+  modelingSidebarOpen: restoredWorkspace.modelingSidebarOpen !== false,
   modelingBusy: false,
+  modelingError: null,
   modelingDecisionBusy: false,
   modelingSessionHistory: new Map(),
   busy: false,
@@ -104,6 +117,7 @@ function persistWorkspaceState() {
       selectedWorkpieceId: state.selectedWorkpieceId,
       selectedStudyId: state.selectedStudyId,
       activeTab: state.activeTab,
+      modelingSidebarOpen: state.modelingSidebarOpen,
       visualizationMode: state.visualizationMode,
       diffusionDefaultedStudyId: state.diffusionDefaultedStudyId,
     }));
@@ -114,7 +128,11 @@ function persistWorkspaceState() {
 
 const elements = Object.fromEntries(
   [
+    "draftRecovery", "draftRecoveryMessage", "retryDraftSave", "reloadDraftRecovery",
+    "closeModelingSidebar", "modelingBackdrop", "modelingContext",
     "modelingDrawer", "draftSaveStatus", "modelingMessages", "modelingPrivacy", "modelingProposal",
+    "modelingProvider", "refreshModelingProvider", "modelingIntro", "modelingExamples",
+    "modelingRequestStatus", "modelingQuestions", "modelingQuestionList",
     "modelingChanges", "modelingValidation", "modelingForm", "modelingInput", "applyModeling",
     "dismissModeling", "undoModeling", "reloadDraft", "sendModeling",
     "geometrySelectionMode", "surfaceSelectionTools", "surfaceSelectionCount", "saveSurfaceSelection",
@@ -127,6 +145,8 @@ const elements = Object.fromEntries(
     "boundaryPowerBalance",
     "draftAnalysisType", "draftInitialTemperature", "draftDuration", "draftTimeStep",
     "timeControls", "timePlay", "timePosition", "timeLabel", "timeLoading", "timeLockScale",
+    "simulationTimeButton", "simulationTimeDialog", "simulationTimeForm", "simulationDuration",
+    "simulationTimeStep", "closeSimulationTime", "cancelSimulationTime", "applySimulationTime",
     "resultResistanceLabel", "resultTimePeakRow", "resultTimePeak",
     "computationStatus", "computationTitle", "computationState", "computationMessage",
     "computationProgress", "computationElapsed", "cancelComputation", "resultAnalysisLabel",
@@ -144,6 +164,7 @@ const elements = Object.fromEntries(
     "geometryNav",
     "materialsNav",
     "scenarioNav",
+    "modelingNav",
     "meshNav",
     "solveNav",
     "resultNav",
@@ -170,6 +191,7 @@ const elements = Object.fromEntries(
     "workpieceCanvas",
     "resetViewButton",
     "sourceEditButton",
+    "heatSourceNav",
     "visualizationModes",
     "modelViewButton",
     "meshViewButton",
@@ -300,7 +322,7 @@ const elements = Object.fromEntries(
     "draftCriterionMax",
     "missingInformation",
     "unsupportedPhysics",
-    "draftMeshSize",
+    "draftMeshSize", "draftMeshMethod", "repairThinMeshButton", "meshTypeLabel", "effectiveMeshSizeLabel", "effectiveMeshSizeUnit",
     "effectiveMeshSize",
     "meshCellCountLabel",
     "estimatedCells",
@@ -336,7 +358,7 @@ const elements = Object.fromEntries(
     "planTolerance",
     "planSummary",
     "planAssumptions",
-    "resultEmpty",
+    "resultEmpty", "resultStatusTitle", "resultStatusMessage", "retryResultButton", "previousResultButton",
     "resultContent",
     "resultMin",
     "resultMax",
@@ -456,6 +478,9 @@ function validationFields() {
     'convection.heat_transfer_coefficient_w_m2_k': 'draftConvection',
   })) add(path, elements[id]);
   add('mesh.target_element_size_mm', elements.draftMeshSize, 'mesh');
+  add('solver.backend', elements.draftMeshMethod, 'mesh');
+  add('enable_heat_source', elements.draftEnableHeatSource);
+  add('enable_global_convection', elements.draftEnableGlobalConvection);
   add('length_unit', elements.lengthUnit, 'geometry');
   [...elements.fixedBoundaryRows.children].forEach((row, index) => {
     add(`boundaries.${index}.selector`, row.querySelector('select'));
@@ -488,12 +513,15 @@ function validationFields() {
   });
   [...elements.componentMaterialList.children].forEach((row, index) => {
     add(`component_materials.${index}.material_id`, row.querySelector('select'), 'materials');
+    add(`component_materials.${index}.material.name`, row.querySelector('[data-material-name]'), 'materials');
+    if (index === 0) add('material.name', row.querySelector('[data-material-name]'), 'materials');
     row.querySelectorAll('[data-material-property]').forEach(node => {
       add(`component_materials.${index}.material.${node.dataset.materialProperty}`, node, 'materials');
       if (index === 0) add(`material.${node.dataset.materialProperty}`, node, 'materials');
     });
   });
   const sourceFields = {
+    name: 'canvasSourceName', placement: 'canvasSourcePlacement',
     shape: 'canvasSourceShape', center_mm: 'canvasSourceX', end_mm: 'canvasSourceEndX',
     'center_mm.x': 'canvasSourceX', 'center_mm.y': 'canvasSourceY', 'center_mm.z': 'canvasSourceZ',
     'end_mm.x': 'canvasSourceEndX', 'end_mm.y': 'canvasSourceEndY', 'end_mm.z': 'canvasSourceEndZ',
@@ -503,7 +531,8 @@ function validationFields() {
     volume_width_mm: 'canvasSourceVolumeWidth', volume_height_mm: 'canvasSourceVolumeHeight',
     volume_depth_mm: 'canvasSourceVolumeDepth', embedding_depth_mm: 'canvasSourceDepth',
   };
-  ThermoFlowSources.sourcesFromPlan(selectedStudy()?.plan).forEach((source, index) => {
+  const draftSources = activeSourceCollection()?.sources || ThermoFlowSources.sourcesFromPlan(selectedStudy()?.plan);
+  draftSources.forEach((source, index) => {
     for (const [property, id] of Object.entries(sourceFields)) {
       add(`heat_sources.${index}.${property}`, activeSourceCollection()?.activeIndex === index ? elements[id] : null,
         'scenario', () => {
@@ -540,9 +569,13 @@ function renderValidationFeedback() {
   const root = document.getElementById('validationFeedback');
   if (!validationFeedback) validationFeedback = new ThermoFlowValidation.Feedback(root, locateValidationFields);
   const study = selectedStudy();
-  const failure = state.validationFailure?.studyId === study?.study_id ? state.validationFailure.message : '';
+  const failureState = study && state.validationFailure?.studyId === study.study_id ? state.validationFailure : null;
+  const serverIssues = failureState?.issues?.length ? failureState.issues
+    : failureState?.fields?.length ? [{message: failureState.message, fields: failureState.fields}] : [];
+  const failure = serverIssues.length ? '' : failureState?.message || '';
   const fields = validationFields();
-  const inputIssues = [];
+  const inputIssues = serverIssues.map(issue => ({severity: 'error', ...issue,
+    suggestion: '请定位到对应输入，修改后重新保存或确认。'}));
   const inspected = new Set();
   if (study?.plan && study.confirmation?.status !== 'confirmed') for (const [path, {node}] of fields) {
     if (!node || inspected.has(node) || node.disabled || node.closest('label')?.hidden
@@ -561,7 +594,7 @@ function renderValidationFeedback() {
       suggestion: path.endsWith('temperature_k') ? '请填写有效的 K 温度；20 ℃ 应填写 293.15 K。' : '请填写符合范围的有效参数。',
       fields: [path]});
   }
-  const checking = state.validationPending?.studyId === study?.study_id
+  const checking = Boolean(study) && state.validationPending?.studyId === study.study_id
     && state.validationPending?.revision === study?.draft_revision;
   const issues = validationFeedback.render(study, {pending: state.draftDirty || checking, failure, fields, inputIssues});
   // Make Kelvin inputs legible without changing their stored unit or value.
@@ -610,15 +643,56 @@ async function loadSelectedValidation() {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(path, options);
+  const { timeoutMs = /^(GET|HEAD)$/i.test(options.method || "GET") ? 30000 : 180000,
+    ...fetchOptions } = options;
+  const controller = new AbortController();
+  const externalSignal = options.signal;
+  const abort = () => controller.abort();
+  if (externalSignal?.aborted) abort();
+  else externalSignal?.addEventListener("abort", abort, { once: true });
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(/^(GET|HEAD)$/i.test(options.method || "GET")
+        ? "读取超时，请检查连接后重试。已完成的求解结果仍保存在服务器。"
+        : "请求等待超时，操作可能已提交；请刷新检查状态，避免重复提交。");
+      error.code = "request_timeout";
+      reject(error);
+      controller.abort();
+    }, timeoutMs);
+  });
+  async function readResponse() {
+  const response = await fetch(path, { ...fetchOptions, signal: controller.signal });
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
+    let validationIssues = [];
     try {
       const payload = await response.json();
       if (typeof payload.detail === "string") {
         message = payload.detail;
       } else if (Array.isArray(payload.detail)) {
-        message = payload.detail.map((item) => item.msg).join("；");
+        const aliases = {
+          fixed_boundaries: "boundaries", target_element_size_mm: "mesh.target_element_size_mm",
+          solver_backend: "solver.backend", material_name: "material.name",
+          thermal_conductivity_w_m_k: "material.thermal_conductivity_w_m_k",
+          density_kg_m3: "material.density_kg_m3", specific_heat_j_kg_k: "material.specific_heat_j_kg_k",
+          ambient_temperature_k: "convection.ambient_temperature_k",
+          convection_coefficient_w_m2_k: "convection.heat_transfer_coefficient_w_m2_k",
+          heat_source_power_w: "heat_source.total_power_w", heat_source_radius_mm: "heat_source.radius_mm",
+          heat_source_shape: "heat_source.shape", heat_source_placement: "heat_source.placement",
+          heat_source_embedding_depth_mm: "heat_source.embedding_depth_mm",
+          heat_source_x_mm: "heat_source.center_mm.x", heat_source_y_mm: "heat_source.center_mm.y",
+          heat_source_z_mm: "heat_source.center_mm.z",
+        };
+        validationIssues = payload.detail.map(item => {
+          const parts = Array.isArray(item.loc) ? [...item.loc] : [];
+          while (["body", "overrides"].includes(parts[0])) parts.shift();
+          if (parts.length && aliases[parts[0]]) parts[0] = aliases[parts[0]];
+          const field = parts.join(".");
+          return { message: `${field ? `${field}：` : ""}${item.msg || "参数无效"}`,
+            fields: field ? [field] : [] };
+        });
+        message = validationIssues.map(item => item.message).join("；");
       } else if (payload.detail?.message) {
         const diagnostics = payload.detail.diagnostics?.join("；");
         message = diagnostics ? `${payload.detail.message}：${diagnostics}` : payload.detail.message;
@@ -626,15 +700,24 @@ async function request(path, options = {}) {
     } catch {
       // Keep the HTTP fallback when an error response is not JSON.
     }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.validationIssues = validationIssues;
+    error.fields = [...new Set(validationIssues.flatMap(issue => issue.fields))];
+    throw error;
   }
   return response.json();
+  }
+  try {
+    return await Promise.race([readResponse(), timeout]);
+  } finally {
+    clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", abort);
+  }
 }
 
 async function loadWorkspace({ preserveSelection = true } = {}) {
-  const previousProject = preserveSelection ? state.selectedProjectId : null;
-  const previousWorkpiece = preserveSelection ? state.selectedWorkpieceId : null;
-  const previousStudy = preserveSelection ? state.selectedStudyId : null;
+  const requestId = state.workspaceRequest = (state.workspaceRequest || 0) + 1;
   try {
     const [health, projects, materials] = await Promise.all([
       request("/health"),
@@ -646,10 +729,19 @@ async function loadWorkspace({ preserveSelection = true } = {}) {
       request("/v1/studies"),
       request("/v1/tasks"),
     ]);
+    if (requestId !== state.workspaceRequest) return;
+    // A refresh may finish after the user has selected another project or saved a newer draft.
+    const previousProject = preserveSelection ? state.selectedProjectId : null;
+    const previousWorkpiece = preserveSelection ? state.selectedWorkpieceId : null;
+    const previousStudy = preserveSelection ? state.selectedStudyId : null;
+    const newerStudies = new Map(state.studies?.map(study => [study.study_id, study]) || []);
     state.health = health;
     state.projects = projects;
     state.workpieces = workpieces;
-    state.studies = studies;
+    state.studies = studies.map(study => {
+      const newer = newerStudies.get(study.study_id);
+      return (newer?.draft_revision || 0) > (study.draft_revision || 0) ? newer : study;
+    });
     state.tasks = tasks;
     state.materials = materials;
     renderUploadMaterialOptions();
@@ -675,10 +767,12 @@ async function loadWorkspace({ preserveSelection = true } = {}) {
     const selectedData = Promise.all([loadSelectedMesh(), loadSelectedResult(), loadSelectedAgentRun(), loadSelectedValidation()]);
     render();
     await selectedData;
+    if (requestId !== state.workspaceRequest) return;
     render();
     startHeatAnimation();
     scheduleTaskPoll();
   } catch (error) {
+    if (requestId !== state.workspaceRequest) return;
     state.health = null;
     renderHealth();
     showToast(`数据加载失败：${error.message}`, true);
@@ -689,8 +783,10 @@ function renderUploadMaterialOptions() {
   const select = elements.materialName;
   if (!select) return;
   const current = select.value;
+  const placeholder = createElement("option", "", "请选择材料（导入后确认）");
+  placeholder.value = "";
   select.replaceChildren(
-    createElement("option", "", "自动补齐（导入后可修改）"),
+    placeholder,
     ...state.materials.map((entry) => {
       const option = createElement("option", "", entry.material.name);
       option.value = entry.material.name;
@@ -712,6 +808,14 @@ function selectLatestStudy(preferredId = null, workpieceId = state.selectedWorkp
 }
 
 async function loadSelectedResult() {
+  const study = selectedStudy();
+  if (study?.status === "succeeded" && state.result?.study_id === study.study_id && !state.resultError) {
+    if (state.playbackError && !state.playbackLoading) void loadResultPlayback(state.result, state.resultRequest);
+    return;
+  }
+  const ticket = state.resultRequest = (state.resultRequest || 0) + 1;
+  state.playbackController?.abort();
+  state.playbackController = null;
   stopTimePlayback();
   cancelScheduledTimeStep();
   state.timeRequest += 1;
@@ -719,26 +823,59 @@ async function loadSelectedResult() {
   state.timeLoading = false;
   state.timeFrames.clear();
   state.playbackStudyId = null;
+  state.playbackLoading = false;
+  state.playbackError = null;
   state.diffusionScale = null;
-  elements.timeControls.hidden = true;
   state.result = null;
+  state.resultError = null;
+  state.resultLoading = study?.status === "succeeded";
+  elements.timeControls.hidden = true;
   renderTimeControls();
+  renderResultState();
   clearComparison();
   state.probe = null;
   state.temperaturePoints = [];
-  const study = selectedStudy();
-  if (study?.status !== "succeeded") return;
+  if (!state.resultLoading) return;
   try {
     const result = await request(`/v1/studies/${study.study_id}/result`);
-    if (selectedStudy()?.study_id !== study.study_id) return;
+    if (ticket !== state.resultRequest || selectedStudy()?.study_id !== study.study_id) return;
     state.result = result;
+    state.resultLoading = false;
     state.timeIndex = 0;
-    renderTimeControls();
+    state.visualizationMode = "thermal";
+    // The summary already contains each step's metrics; don't show final temperatures at t=0.
+    if (result.time_steps?.length) state.timeFrame = { study_id: study.study_id, step: result.time_steps[0] };
+    render();
     if (result.time_steps?.length) {
-      state.timeLoading = true;
+      await selectTimeStep(0);
+      if (ticket !== state.resultRequest || selectedStudy()?.study_id !== study.study_id) return;
+      // Large playback downloads must not hold the workspace or computation submission busy.
+      void loadResultPlayback(result, ticket);
+    }
+  } catch (error) {
+    if (ticket !== state.resultRequest || selectedStudy()?.study_id !== study.study_id) return;
+    state.resultError = error.message;
+    showToast(`结果读取失败：${error.message}`, true);
+  } finally {
+    if (ticket === state.resultRequest && selectedStudy()?.study_id === study.study_id) {
+      state.resultLoading = false;
+      renderResultState();
       renderTimeControls();
-      const playback = await request(`/v1/studies/${study.study_id}/playback`);
-      if (selectedStudy()?.study_id !== study.study_id) return;
+      renderPrimaryAction();
+    }
+  }
+}
+
+async function loadResultPlayback(result, ticket) {
+  const study = { study_id: result.study_id };
+  const controller = new AbortController();
+  state.playbackController = controller;
+  state.playbackLoading = true;
+  state.playbackError = null;
+  renderTimeControls();
+  try {
+    const playback = await request(`/v1/studies/${study.study_id}/playback`, { timeoutMs: 120000, signal: controller.signal });
+    if (ticket !== state.resultRequest || selectedStudy()?.study_id !== study.study_id) return;
       if (playback.frames.length !== result.time_steps.length) {
         throw new Error("批量播放帧与求解时间步数量不一致，请重新求解");
       }
@@ -776,17 +913,54 @@ async function loadSelectedResult() {
         });
       }
       state.diffusionScale = ThermoFlowTransient.diffusionScale(playback.frames);
-      state.visualizationMode = "thermal";
-      persistWorkspaceState();
-      state.playbackStudyId = study.study_id;
-      state.timeLoading = false;
-      await selectTimeStep(state.timeIndex);
-    }
-  } catch (error) {
-    state.timeLoading = false;
+
+    state.playbackStudyId = study.study_id;
+    state.playbackLoading = false;
     renderTimeControls();
-    showToast(`结果读取失败：${error.message}`, true);
+    // Preserve whichever time and view the user chose while the download was in flight.
+    if (!state.timeLoading) await selectTimeStep(state.timeIndex);
+  } catch (error) {
+    if (ticket !== state.resultRequest || selectedStudy()?.study_id !== study.study_id) return;
+    state.playbackError = error.message;
+  } finally {
+    if (ticket === state.resultRequest && selectedStudy()?.study_id === study.study_id) {
+      state.playbackLoading = false;
+      if (state.playbackController === controller) state.playbackController = null;
+      renderTimeControls();
+    }
   }
+}
+
+function previousCompletedStudy() {
+  const study = selectedStudy();
+  return state.studies.find(item => item.study_id !== study?.study_id && item.status === "succeeded"
+    && item.project_id === state.selectedProjectId && item.workpiece_id === state.selectedWorkpieceId);
+}
+
+function renderResultState() {
+  const study = selectedStudy();
+  const available = Boolean(state.result && state.result.study_id === study?.study_id);
+  elements.resultEmpty.hidden = available;
+  elements.resultContent.hidden = !available;
+  elements.retryResultButton.hidden = available || state.resultLoading || study?.status !== "succeeded";
+  elements.previousResultButton.hidden = available || !previousCompletedStudy();
+  let title = "尚无求解结果", message = "确认仿真输入后开始求解。";
+  const task = activeStudyTask();
+  if (task || study?.status === "running") {
+    title = task?.operation === "mesh" ? "当前研究正在生成网格" : "当前研究正在求解";
+    message = "此项研究完成后会自动显示结果。其他已完成研究的结果仍保留在研究记录中。";
+  } else if (state.resultLoading && study?.status === "succeeded") {
+    title = "求解已完成，正在读取结果";
+    message = "正在加载结果摘要和当前时刻，随后在后台准备完整回放。";
+  } else if (study?.status === "succeeded") {
+    title = "求解已完成，结果暂未加载";
+    message = state.resultError || "点击重新读取即可查看已保存的结果，无需重新求解。";
+  } else if (study?.status === "failed") {
+    title = "本次求解未完成";
+    message = "请查看上方任务记录中的失败原因；已确认的输入和其他研究结果仍保留。";
+  }
+  elements.resultStatusTitle.textContent = title;
+  elements.resultStatusMessage.textContent = message;
 }
 
 async function loadSelectedMesh() {
@@ -794,7 +968,8 @@ async function loadSelectedMesh() {
   const study = selectedStudy();
   if (!study || !["needs_review", "ready", "blocked"].includes(study.mesh_status)) return;
   try {
-    state.mesh = await request(`/v1/studies/${study.study_id}/mesh`);
+    const mesh = await request(`/v1/studies/${study.study_id}/mesh`);
+    if (selectedStudy()?.study_id === study.study_id) state.mesh = mesh;
   } catch (error) {
     showToast(`网格读取失败：${error.message}`, true);
   }
@@ -1021,6 +1196,7 @@ async function deleteComponent(component) {
 function renderComponents() {
   const workpiece = selectedWorkpiece();
   const components = workpiece?.components || [];
+  const hasStudies = state.studies.some(study => study.workpiece_id === workpiece?.workpiece_id);
   const componentIds = new Set(components.map((component) => component.component_id));
   if (!componentIds.has(state.selectedComponentId)) state.selectedComponentId = null;
   if (!componentIds.has(state.isolatedComponentId)) state.isolatedComponentId = null;
@@ -1036,6 +1212,7 @@ function renderComponents() {
   }
   components.forEach((component, index) => {
     const row = createElement("div", "component-row");
+    row.dataset.componentId = component.component_id;
     row.classList.toggle("is-selected", component.component_id === state.selectedComponentId);
     row.classList.toggle("is-hidden", state.hiddenComponentIds.has(component.component_id));
     row.classList.toggle("is-isolated", component.component_id === state.isolatedComponentId);
@@ -1084,16 +1261,60 @@ function renderComponents() {
     isolate.addEventListener("click", () => toggleComponentIsolation(component.component_id));
     const remove = createElement("button", "component-tool component-tool-danger", "删除");
     remove.type = "button";
-    remove.title = components.length <= 1
-      ? "至少保留一个组件"
+    remove.title = hasStudies ? "已有研究的几何不能删除组件；请重新导入 STL 后调整组件"
+      : components.length <= 1 ? "至少保留一个组件"
       : `从 STL 中删除${component.name}`;
     remove.setAttribute("aria-label", remove.title);
-    remove.disabled = components.length <= 1 || Boolean(state.busy);
+    remove.disabled = hasStudies || components.length <= 1 || Boolean(state.busy);
     remove.addEventListener("click", () => deleteComponent(component));
     actions.append(rename, visibility, isolate, remove);
     row.append(select, actions);
     elements.componentList.append(row);
   });
+}
+
+function showComponentHover(hit) {
+  const tooltip = document.getElementById("componentHoverTooltip");
+  const workpiece = hit?.options.workpiece;
+  const components = workpiece?.components || [];
+  const index = components.findIndex(item => item.component_id === hit?.componentId);
+  const component = components[index];
+  document.querySelectorAll(".component-row.is-hovered, .component-material-row.is-hovered")
+    .forEach(row => row.classList.remove("is-hovered"));
+  if (!component) {
+    tooltip.hidden = true;
+    delete tooltip.dataset.componentId;
+    return;
+  }
+  const study = hit.options.study;
+  let material = study?.plan?.component_materials?.find(item => item.component_id === component.component_id)?.material
+    || study?.plan?.material;
+  const selected = selectedWorkpiece()?.workpiece_id === workpiece.workpiece_id;
+  if (selected && selectedStudy()?.study_id === study?.study_id && study?.plan) {
+    const row = elements.componentMaterialList.querySelector(`[data-component-id="${CSS.escape(component.component_id)}"]`);
+    if (row && study.confirmation?.status !== "confirmed") material = materialAssignmentFromRow(row).material;
+  }
+  if (selected) {
+    document.querySelectorAll(`.component-row[data-component-id="${CSS.escape(component.component_id)}"], .component-material-row[data-component-id="${CSS.escape(component.component_id)}"]`)
+      .forEach(row => row.classList.add("is-hovered"));
+  }
+  const number = `组件 ${index + 1}`;
+  document.getElementById("componentHoverName").textContent = component.name === number ? number : `${number} · ${component.name}`;
+  document.getElementById("componentHoverMaterial").textContent = material
+    ? `材料：${material.name}${material.source_type === "suggestion" ? "（待确认）" : ""}` : "材料：未设置";
+  document.getElementById("componentHoverConductivity").textContent = Number.isFinite(material?.thermal_conductivity_w_m_k)
+    ? `导热系数：${formatNumber(material.thermal_conductivity_w_m_k)} W/(m·K)` : "导热系数：未设置";
+  document.getElementById("componentHoverHint").textContent = hit.options.selectionMode === "faces"
+    ? "单击选择三角面" : hit.options.sourcePlacement ? "热源放置模式：单击放置热源"
+    : hit.options.mode !== "model" && hit.options.result ? "单击查看温度与所属组件" : "单击定位到材料设置";
+  tooltip.dataset.componentId = component.component_id;
+  tooltip.hidden = false;
+  const gap = 14, margin = 8;
+  let left = hit.clientX + gap, top = hit.clientY + gap;
+  if (left + tooltip.offsetWidth > window.innerWidth - margin) left = hit.clientX - tooltip.offsetWidth - gap;
+  if (top + tooltip.offsetHeight > window.innerHeight - margin) top = hit.clientY - tooltip.offsetHeight - gap;
+  tooltip.style.left = `${Math.max(margin, left)}px`;
+  tooltip.style.top = `${Math.max(margin, top)}px`;
 }
 
 function selectComponent(componentId, openMaterials = false) {
@@ -1183,7 +1404,8 @@ async function renameSelectedComponent(event) {
 }
 
 async function selectWorkpiece(workpieceId) {
-  if (!await flushDraftBeforeNavigation()) return;
+  const navigationId = state.navigationRequest = (state.navigationRequest || 0) + 1;
+  if (!await flushDraftBeforeNavigation() || navigationId !== state.navigationRequest) return;
   state.selectedWorkpieceId = workpieceId;
   state.selectedProjectId = selectedWorkpiece()?.project_id || null;
   state.activeTab = selectedWorkpiece()?.unit_confirmed ? "scenario" : "geometry";
@@ -1201,7 +1423,8 @@ async function selectWorkpiece(workpieceId) {
 }
 
 async function selectProject(projectId) {
-  if (!await flushDraftBeforeNavigation()) return;
+  const navigationId = state.navigationRequest = (state.navigationRequest || 0) + 1;
+  if (!await flushDraftBeforeNavigation() || navigationId !== state.navigationRequest) return;
   state.selectedProjectId = projectId;
   const project = selectedProject();
   const workpieces = selectedProjectWorkpieces();
@@ -1222,7 +1445,17 @@ async function selectProject(projectId) {
   startHeatAnimation();
 }
 
+function syncMaximumResultControl() {
+  const available = Boolean(state.result && state.result.study_id === selectedStudy()?.study_id && !state.comparison);
+  const button = document.getElementById("focusMaximum");
+  button.disabled = !available;
+  button.title = state.comparison ? "退出比较后可定位最高温度"
+    : available ? "定位最高温度" : "完成仿真并读取结果后可定位最高温度";
+  elements.resultHotspot.disabled = !available;
+}
+
 function renderWorkspace() {
+  syncMaximumResultControl();
   const project = selectedProject();
   const workpiece = selectedWorkpiece();
   const study = selectedStudy();
@@ -1272,8 +1505,8 @@ function renderWorkspace() {
     state.visualizationMode = hasThermalResult ? "thermal" : "model";
   }
   elements.resetViewButton.hidden = !hasPreview;
-  elements.sourceEditButton.hidden = !study?.plan || !hasPreview || comparing;
-  elements.sourceEditButton.title = hasSource ? "编辑热源" : "添加热源";
+  elements.sourceEditButton.hidden = !hasPreview || comparing;
+  elements.sourceEditButton.title = "热源设置";
   elements.sourceEditButton.setAttribute("aria-label", elements.sourceEditButton.title);
   elements.visualizationModes.hidden = comparing || (!hasMesh && !hasThermalResult);
   elements.meshViewButton.hidden = !hasMesh;
@@ -1403,7 +1636,8 @@ function renderStudies() {
 }
 
 async function selectStudy(studyId, options = {}) {
-  if (!await flushDraftBeforeNavigation()) return;
+  const navigationId = state.navigationRequest = (state.navigationRequest || 0) + 1;
+  if (!await flushDraftBeforeNavigation() || navigationId !== state.navigationRequest) return;
   state.selectedStudyId = studyId;
   const study = selectedStudy();
   if (study) {
@@ -1477,9 +1711,7 @@ function renderInspector() {
     );
   }
 
-  const resultAvailable = Boolean(state.result);
-  elements.resultEmpty.hidden = resultAvailable;
-  elements.resultContent.hidden = !resultAvailable;
+  renderResultState();
   if (state.result) renderResult(state.result);
   renderComparisonTool();
   renderAgent();
@@ -1502,6 +1734,13 @@ function renderGeometryPanel() {
   const topology = workpiece.geometry?.summary?.topology || {};
   elements.geometryQuality.textContent = workpiece.geometry.available ? "检查完成" : "检查失败";
   elements.unitNotice.hidden = workpiece.unit_confirmed;
+  const destination = state.pendingInputTarget?.workpieceId === workpiece.workpiece_id ? state.pendingInputTarget.target : null;
+  const destinationLabel = destination === "source" ? "热源" : "组件材料";
+  elements.unitNotice.textContent = destination
+    ? `设置${destinationLabel}前，请确认 STL 的文件单位。确认后会自动打开${destinationLabel}编辑。`
+    : "STL 不包含单位。请选择文件坐标的实际单位，确认后将锁定本工件的尺度。";
+  elements.unitForm.querySelector('button[type="submit"]').textContent = destination
+    ? `确认尺度并设置${destinationLabel}` : "确认尺度";
   elements.unitForm.hidden = workpiece.unit_confirmed;
   updateUnitDimensions();
   const checks = [
@@ -1778,6 +2017,8 @@ function appendSurfaceCondition(condition = { kind: "heat_flux" }) {
   if (condition.region_id) target.value = condition.region_id;
   regionLabel.append(target);
   const fields = createElement("div", "form-grid");
+  const valuesByKind = { [condition.kind]: { ...condition } };
+  let renderedKind = kind.value;
   const renderFields = () => {
     fields.replaceChildren(...SURFACE_FIELDS[kind.value].map(([property, title, minimum, maximum]) => {
       const label = createElement("label", property === "emissivity_source" ? "wide-field" : "", title);
@@ -1785,11 +2026,17 @@ function appendSurfaceCondition(condition = { kind: "heat_flux" }) {
       input.type = minimum == null ? "text" : "number"; input.required = true;
       if (minimum != null) { input.min = minimum; input.max = maximum; input.step = "any"; }
       else input.maxLength = 300;
-      input.dataset.property = property; input.value = condition[property] ?? "";
+      input.dataset.property = property; input.value = valuesByKind[kind.value]?.[property] ?? "";
       label.append(input); return label;
     }));
   };
-  kind.addEventListener("change", () => { renderFields(); drawWorkpiece(); });
+  kind.addEventListener("change", () => {
+    valuesByKind[renderedKind] = Object.fromEntries([...fields.querySelectorAll("input")]
+      .map(input => [input.dataset.property, input.value]));
+    renderedKind = kind.value;
+    renderFields();
+    drawWorkpiece();
+  });
   target.addEventListener("change", () => { state.selectedRegionId = target.value; setVisualizationMode("model"); });
   row.addEventListener("input", () => drawWorkpiece());
   renderFields();
@@ -1936,38 +2183,20 @@ function syncEnabledThermalFields() {
   const workpiece = selectedWorkpiece();
   const hasPreview = Boolean(workpiece?.geometry?.summary?.preview?.triangles?.length
     || workpiece?.kind === "box");
-  elements.sourceEditButton.hidden = !selectedStudy()?.plan || !hasPreview || Boolean(state.comparison);
+  elements.sourceEditButton.hidden = !hasPreview || Boolean(state.comparison);
+  elements.openSourceEditorFromScenario.disabled = !selectedWorkpiece();
+  syncSourceConvectionControls();
   drawWorkpiece();
 }
 elements.draftEnableHeatSource.addEventListener("change", syncEnabledThermalFields);
 elements.draftEnableGlobalConvection.addEventListener("change", syncEnabledThermalFields);
-elements.materialsCreateDraftButton.addEventListener("click", async () => {
-  const workpiece = selectedWorkpiece();
-  if (!workpiece) return;
-  if (!workpiece.unit_confirmed) {
-    switchTab("geometry");
-    showToast("请先确认 STL 尺度", true);
-    return;
-  }
-  const study = await createStudy(
-    workpiece.workpiece_id,
-    "请生成可编辑的热传导仿真草案，随后由用户手动确认材料、热源和边界条件",
-    null, "manual",
-  );
-  if (study?.plan) switchTab("materials");
-});
+elements.materialsCreateDraftButton.addEventListener("click", () => prepareStudyEditor("materials"));
 elements.materialsGoScenario.addEventListener("click", () => switchTab("scenario"));
 elements.editMaterialsButton.addEventListener("click", () => copySelectedStudy("materials"));
 elements.editParametersButton.addEventListener("click", () => copySelectedStudy("scenario"));
-elements.manualDraftButton.addEventListener("click", async () => {
-  if (!selectedWorkpiece()?.unit_confirmed) return;
-  const study = await createStudy(selectedWorkpiece().workpiece_id, "手动设置瞬态导热", null, "manual");
-  if (study?.plan) switchTab("materials");
-});
+elements.manualDraftButton.addEventListener("click", () => prepareStudyEditor("materials"));
 elements.openSourceEditorFromScenario.addEventListener("click", () => {
-  if (!selectedStudy()?.plan) return;
   openSourceEditor();
-  elements.sourceEditorSlot.scrollIntoView({ block: "nearest", behavior: "smooth" });
 });
 
 function updateUnitDimensions() {
@@ -1981,6 +2210,50 @@ function updateUnitDimensions() {
   elements.unitDimensions.textContent = `${formatNumber(source.x * scale)} × ${formatNumber(source.y * scale)} × ${formatNumber(source.z * scale)} mm`;
 }
 
+function queueEditorAfterScale(target) {
+  const workpiece = selectedWorkpiece();
+  if (!workpiece) { showToast("请先导入 STL 模型", true); return; }
+  state.pendingInputTarget = { workpieceId: workpiece.workpiece_id, target };
+  switchTab("geometry");
+  renderGeometryPanel();
+  elements.unitForm.scrollIntoView({ block: "nearest" });
+  elements.lengthUnit.focus({ preventScroll: true });
+  showToast(`确认文件单位后，将自动打开${target === "source" ? "热源设置" : "组件材料"}`);
+}
+
+async function prepareStudyEditor(target) {
+  const workpiece = selectedWorkpiece();
+  if (!workpiece?.unit_confirmed) { queueEditorAfterScale(target); return; }
+  state.pendingInputTarget = { workpieceId: workpiece.workpiece_id, target };
+  if (state.busy && !selectedStudy()?.plan) return;
+  if (state.inputPreparationPromise) return state.inputPreparationPromise;
+  state.inputPreparationPromise = (async () => {
+    if (!selectedStudy()?.plan) {
+      const study = await createStudy(workpiece.workpiece_id, "手动设置材料、热源与仿真时长", null, "manual");
+      if (!study?.plan || selectedWorkpiece()?.workpiece_id !== workpiece.workpiece_id) return;
+    }
+    const destination = state.pendingInputTarget;
+    state.pendingInputTarget = null;
+    if (destination?.workpieceId !== selectedWorkpiece()?.workpiece_id) return;
+    if (destination.target === "source") openSourceEditor();
+    else { closeSourceEditor(); switchTab("materials"); }
+  })();
+  try { return await state.inputPreparationPromise; }
+  finally { state.inputPreparationPromise = null; }
+}
+
+async function editComponentMaterial(componentId) {
+  if (state.busy || activeStudyTask()) return;
+  if (selectedStudy()?.confirmation?.status === "confirmed") {
+    const copied = await copySelectedStudy("materials");
+    if (!copied) return;
+  } else await prepareStudyEditor("materials");
+  const row = [...elements.componentMaterialList.querySelectorAll(".component-material-row")]
+    .find(item => item.dataset.componentId === componentId);
+  row?.scrollIntoView({ block: "center", behavior: "smooth" });
+  row?.querySelector("select")?.focus({ preventScroll: true });
+}
+
 function renderMaterialsPanel() {
   const workpiece = selectedWorkpiece();
   const study = selectedStudy();
@@ -1989,6 +2262,9 @@ function renderMaterialsPanel() {
   const confirmed = study?.confirmation?.status === "confirmed";
   elements.editMaterialsButton.hidden = !confirmed;
   elements.editMaterialsButton.disabled = state.busy || Boolean(activeStudyTask());
+  elements.componentMaterialList.querySelectorAll('.component-material-edit').forEach(button => {
+    button.disabled = elements.editMaterialsButton.disabled;
+  });
   elements.editParametersButton.hidden = !confirmed;
   elements.editParametersButton.disabled = state.busy || Boolean(activeStudyTask());
   elements.manualDraftButton.hidden = Boolean(plan);
@@ -2001,7 +2277,11 @@ function renderMaterialsPanel() {
   elements.confirmMaterials.disabled = confirmed;
   elements.materialConfirmationCheck.classList.toggle("is-confirmed", materialsConfirmed);
   elements.materialsCreateDraftButton.hidden = Boolean(plan);
-  elements.materialsCreateDraftButton.disabled = state.busy || !workpiece?.unit_confirmed;
+  elements.materialsCreateDraftButton.disabled = state.busy || !workpiece;
+  elements.materialsCreateDraftButton.textContent = workpiece?.unit_confirmed ? "开始设置组件材料" : "确认单位并设置材料";
+  elements.materialsEmpty.textContent = !workpiece?.unit_confirmed
+    ? "先确认 STL 的实际单位，随后会自动创建编辑草案，为各个组件分别设置材料。"
+    : "点击上方材料入口或下方按钮，即可开始逐组件设置。";
   elements.materialsGoScenario.hidden = Boolean(plan);
   if (plan && state.materialsSyncedFor === renderKey) return;
   state.materialsSyncedFor = plan ? renderKey : null;
@@ -2025,6 +2305,14 @@ function renderMaterialsPanel() {
       createElement("i", `component-swatch component-color-${index % 6}`),
       createElement("strong", "", component.name),
     );
+    if (confirmed) {
+      const edit = createElement("button", "component-material-edit", "修改此组件");
+      edit.type = "button";
+      edit.setAttribute("aria-label", `修改${component.name}材料`);
+      edit.disabled = state.busy || Boolean(activeStudyTask());
+      edit.addEventListener("click", () => editComponentMaterial(component.component_id));
+      heading.append(edit);
+    }
     const select = createElement("select", "component-material-select");
     select.setAttribute("aria-label", `${component.name}材料`);
     select.disabled = study.confirmation?.status === "confirmed";
@@ -2052,6 +2340,17 @@ function renderMaterialsPanel() {
       row.baseMaterial = assignedMaterial;
     }
     const fields = createElement("div", "component-material-fields");
+    const nameLabel = createElement("label", "component-material-name");
+    nameLabel.append(createElement("span", "", "材料名称"));
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.maxLength = 100;
+    nameInput.required = true;
+    nameInput.dataset.materialName = "true";
+    nameInput.setAttribute("aria-label", `${component.name}材料名称`);
+    nameInput.disabled = confirmed;
+    nameLabel.append(nameInput);
+    fields.append(nameLabel);
     const fieldDefinitions = [
       ["导热系数", "W/(m·K)", "thermal_conductivity_w_m_k", 0.011, 5000],
       ["密度", "kg/m³", "density_kg_m3", 1.01, 30000],
@@ -2068,6 +2367,7 @@ function renderMaterialsPanel() {
       input.max = String(maximum);
       input.required = true;
       input.dataset.materialProperty = property;
+      input.setAttribute("aria-label", `${component.name}${labelText} (${unit})`);
       input.disabled = study.confirmation?.status === "confirmed";
       label.append(title, input);
       fields.append(label);
@@ -2076,7 +2376,8 @@ function renderMaterialsPanel() {
     const syncRow = (material, materialId) => {
       row.baseMaterial = material;
       row.materialId = materialId;
-      fields.querySelectorAll("input").forEach((input) => {
+      nameInput.value = material.name;
+      fields.querySelectorAll("input[data-material-property]").forEach((input) => {
         input.value = material[input.dataset.materialProperty];
       });
       source.textContent = materialSourceSummary(material, materialId);
@@ -2120,13 +2421,14 @@ function resetMaterialConfirmation() {
 
 function materialAssignmentFromRow(row) {
   const base = row.baseMaterial;
+  const name = row.querySelector("input[data-material-name]")?.value.trim() ?? base.name;
   const values = Object.fromEntries(
     [...row.querySelectorAll("input[data-material-property]")].map((input) => [
       input.dataset.materialProperty,
       Number(input.value),
     ]),
   );
-  const edited = Object.entries(values).some(
+  const edited = name !== base.name || Object.entries(values).some(
     ([property, value]) => !Number.isFinite(value) || value !== Number(base[property]),
   );
   if (!edited) {
@@ -2136,14 +2438,13 @@ function materialAssignmentFromRow(row) {
       material: base,
     };
   }
-  const baseName = base.name.replace(/（用户覆盖）$/, "");
   return {
     component_id: row.dataset.componentId,
     material_id: null,
     material: {
       ...base,
       ...values,
-      name: `${baseName}（用户覆盖）`,
+      name,
       source_basis: "用户在结构化材料面板中确认或覆盖的热物性值。",
       source_type: "user",
       source_reference: null,
@@ -2198,6 +2499,7 @@ function renderStructuredDraft() {
     state.draftBaseRevision = study.draft_revision || 0;
     state.draftDirty = false;
     state.draftSaveError = false;
+    state.draftSaveConflict = false;
     elements.studyPurpose.value = study.purpose || plan.purpose || "";
     elements.draftAnalysisType.value = plan.analysis_type;
     elements.draftInitialTemperature.value = plan.initial_temperature_k ?? "";
@@ -2226,13 +2528,13 @@ function renderStructuredDraft() {
     const criterion = (plan.criteria || []).find((item) => item.metric === "max_temperature");
     elements.draftCriterionMax.value = criterion?.target?.value ?? "";
     elements.draftMeshSize.value = plan.mesh?.target_element_size_mm ?? "";
+    elements.draftMeshMethod.value = plan.solver?.backend || "voxel_stl_v1";
     state.draftSyncedFor = study.study_id;
   }
   elements.structuredInputs.querySelectorAll("input, select").forEach((input) => {
     input.disabled = study.confirmation?.status === "confirmed";
   });
-  elements.openSourceEditorFromScenario.disabled = study.confirmation?.status === "confirmed"
-    ? false : !elements.draftEnableHeatSource.checked;
+  elements.openSourceEditorFromScenario.disabled = false;
   const regional = selectedWorkpiece()?.cad_format === "stl";
   elements.fixedBoundaryEditor.hidden = !regional;
   elements.surfaceThermalEditor.hidden = !regional;
@@ -2255,11 +2557,27 @@ function renderStructuredDraft() {
   renderReviewList(elements.unsupportedPhysics, plan.unsupported_physics || []);
 }
 
+function syncDurationTimeStep(durationInput, timeStepInput) {
+  const duration = Number(durationInput.value);
+  if (durationInput.value === "" || !Number.isFinite(duration) || duration <= 0 || duration > 3600
+      || !durationInput.checkValidity()) return false;
+  const minimum = Math.max(duration / 200, Number(timeStepInput.min) || 0);
+  const previous = Number(timeStepInput.value);
+  const next = timeStepInput.value !== "" && Number.isFinite(previous) && previous > 0
+    ? Math.max(minimum, Math.min(duration, previous)) : minimum;
+  timeStepInput.setCustomValidity("");
+  if (previous === next && timeStepInput.value !== "") return false;
+  timeStepInput.value = String(next);
+  return true;
+}
+
 function syncTransientFields() {
   const transient = elements.draftAnalysisType.value === "transient_conduction";
   document.querySelectorAll("[data-transient-field]").forEach((label) => {
     label.hidden = !transient;
-    label.querySelector("input").required = transient;
+    const input = label.querySelector("input");
+    input.required = transient;
+    input.disabled = !transient || selectedStudy()?.confirmation?.status === "confirmed";
   });
   if (transient) {
     const defaults = ThermoFlowSources.longTransientWindow(selectedStudy()?.plan || {});
@@ -2286,10 +2604,17 @@ function renderMeshPanel() {
     ? [...(mesh.warnings || []), ...(mesh.notices || [])]
     : study?.policy?.warnings || [];
   elements.draftMeshSize.disabled = !study?.plan || study.confirmation?.status === "confirmed";
+  elements.draftMeshMethod.disabled = elements.draftMeshSize.disabled || selectedWorkpiece()?.cad_format !== "stl";
+  const tetra = study?.plan?.solver?.backend === "tetra_stl_v1";
+  elements.meshTypeLabel.textContent = tetra ? "单元类型" : "各轴活动层";
+  elements.repairThinMeshButton.hidden = !(study?.mesh_status === "blocked" && !tetra && selectedWorkpiece()?.cad_format === "stl");
+  elements.repairThinMeshButton.disabled = state.busy;
   elements.effectiveMeshSize.textContent = formatNumber(
-    mesh?.pitch_mm ?? derived.effective_pitch_mm,
+    tetra ? mesh?.quality?.cell_volume_mm3 : mesh?.pitch_mm ?? derived.effective_pitch_mm,
   );
-  elements.meshCellCountLabel.textContent = mesh ? "实际活动单元" : "预计包围盒单元";
+  elements.effectiveMeshSizeLabel.textContent = tetra ? "平均单元体积" : "有效单元尺寸";
+  elements.effectiveMeshSizeUnit.textContent = tetra ? "mm³" : "mm";
+  elements.meshCellCountLabel.textContent = mesh ? "实际活动单元" : tetra ? "预计四面体单元" : "预计包围盒单元";
   elements.meshPointCountLabel.textContent = mesh ? "实际网格点" : "预计网格点";
   elements.estimatedCells.textContent = mesh?.active_cells
     ? formatInteger(mesh.active_cells)
@@ -2303,7 +2628,7 @@ function renderMeshPanel() {
       : "—";
   elements.surfaceCells.textContent = mesh?.surface_cells ? formatInteger(mesh.surface_cells) : "—";
   const layers = mesh?.quality?.occupied_layers;
-  elements.occupiedLayers.textContent = layers
+  elements.occupiedLayers.textContent = tetra ? "贴合表面四面体" : layers
     ? `${formatInteger(layers.x)} × ${formatInteger(layers.y)} × ${formatInteger(layers.z)}`
     : "—";
   elements.meshConnectivity.textContent = mesh?.quality
@@ -2338,6 +2663,12 @@ function renderMeshPanel() {
   elements.boundaryMapping.hidden = !mesh?.boundary_mapping?.length;
   elements.boundaryMapping.replaceChildren(...(mesh?.boundary_mapping || []).map(boundary => {
     const row = createElement("div");
+    if (boundary.component_id && Number.isFinite(boundary.cells)) {
+      const component = (selectedWorkpiece()?.components || []).find(c => c.component_id === boundary.component_id);
+      row.append(createElement("dt", "", component?.name || boundary.component_id),
+        createElement("dd", "", `${formatInteger(boundary.cells)} 个四面体 · 体积偏差 ${formatNumber(boundary.volume_deviation_percent, 3)}%`));
+      return row;
+    }
     row.append(createElement("dt", "", boundaryName(boundary)),
       createElement("dd", "", `${formatInteger(boundary.mapped_cells)} 个单元 · ` + (boundary.kind
         ? `${{ heat_flux: "热流", convection: "对流", radiation: "辐射" }[boundary.kind]} · ${formatScientific(boundary.mapped_area.value)} m²`
@@ -2420,15 +2751,125 @@ function renderTimeControls() {
   elements.timeLabel.textContent = `${formatNumber(steps[state.timeIndex]?.time_s || 0)} s`;
   elements.timeControls.setAttribute("aria-busy", String(state.timeLoading));
   elements.timeControls.dataset.playbackReady = String(playbackReady);
-  elements.timeLoading.hidden = !state.timeLoading;
-  elements.timeLoading.textContent = playbackReady ? "" : `一次加载 ${steps.length} 个真实温度帧…`;
-  elements.timePosition.disabled = !playbackReady;
-  elements.timePlay.disabled = !playbackReady;
+  elements.timeLoading.hidden = !state.timeLoading && !state.playbackLoading && !state.playbackError;
+  elements.timeLoading.textContent = state.timeLoading ? "正在读取所选时刻…"
+    : state.playbackLoading ? `正在后台准备 ${steps.length} 帧回放，可先拖动查看`
+    : state.playbackError ? "完整回放暂未载入，可拖动按需读取；刷新可重试。" : "";
+  elements.timePosition.disabled = !steps.length;
+  elements.timePlay.disabled = !steps.length;
+  elements.simulationTimeButton.disabled = state.busy || !selectedStudy()?.plan;
   elements.timeLockScale.checked = true;
   elements.timeLockScale.disabled = true;
   elements.timePlay.textContent = state.timePlaying ? "Ⅱ" : "▶";
   elements.timePlay.title = state.timePlaying ? "暂停播放" : "播放时间步";
   elements.timePlay.setAttribute("aria-label", elements.timePlay.title);
+}
+
+function openSimulationTimeSettings() {
+  const study = selectedStudy();
+  if (!study?.plan || state.busy) return;
+  stopTimePlayback();
+  renderTimeControls();
+  const timing = ThermoFlowSources.longTransientWindow(study.plan);
+  elements.simulationTimeDialog.dataset.studyId = study.study_id;
+  elements.simulationDuration.value = String(timing.duration);
+  elements.simulationTimeStep.value = String(timing.timeStep);
+  elements.simulationTimeStep.setCustomValidity("");
+  elements.simulationTimeDialog.showModal();
+  elements.simulationDuration.focus();
+  elements.simulationDuration.select();
+}
+
+async function recoverCopiedStudy(copied, originalStudy, navigationId) {
+  if (!copied?.study_id) return false;
+  state.studies ||= [];
+  if (!state.studies.some(item => item.study_id === copied.study_id)) state.studies.push(copied);
+  const current = selectedStudy()?.study_id === originalStudy.study_id
+    && (state.navigationRequest || 0) === navigationId;
+  if (current) {
+    state.selectedProjectId = copied.project_id || originalStudy.project_id;
+    state.selectedWorkpieceId = copied.workpiece_id || originalStudy.workpiece_id;
+    state.selectedStudyId = copied.study_id;
+    state.activeTab = "scenario";
+    state.draftSyncedFor = null;
+    state.materialsSyncedFor = null;
+    discardSourceDraft();
+  }
+  try { await loadWorkspace(); }
+  catch { if (current) render(); }
+  return current;
+}
+
+async function applySimulationTime(event) {
+  event.preventDefault();
+  if (state.busy) return;
+  const study = selectedStudy();
+  if (!study?.plan || study.study_id !== elements.simulationTimeDialog.dataset.studyId) return;
+  const navigationId = state.navigationRequest || 0;
+  const wasConfirmed = study.confirmation?.status === "confirmed";
+  elements.simulationTimeStep.setCustomValidity("");
+  if (!elements.simulationTimeForm.reportValidity()) return;
+  const duration = Number(elements.simulationDuration.value);
+  const timeStep = Number(elements.simulationTimeStep.value);
+  if (timeStep > duration || duration / timeStep > 200 + 1e-9) {
+    elements.simulationTimeStep.setCustomValidity(
+      `时间步长应在 ${duration / 200} 到 ${duration} 秒之间。`,
+    );
+    elements.simulationTimeStep.reportValidity();
+    return;
+  }
+  if (!wasConfirmed && !await flushDraftBeforeNavigation()) return;
+  const original = state.studies?.find(item => item.study_id === study.study_id) || study;
+  const overrides = {
+    analysis_type: "transient_conduction",
+    initial_temperature_k: original.plan.initial_temperature_k ?? 293.15,
+    duration_s: duration,
+    time_step_s: timeStep,
+  };
+  const current = () => selectedStudy()?.study_id === study.study_id
+    && (state.navigationRequest || 0) === navigationId;
+  setBusy(true);
+  elements.applySimulationTime.disabled = true;
+  let copied = null;
+  try {
+    copied = await request(`/v1/studies/${study.study_id}/copy`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overrides }),
+    });
+    if (copied.status !== "needs_input") throw new Error(copied.failure || "仿真时间未通过校验");
+    if (wasConfirmed) {
+      await request(`/v1/studies/${copied.study_id}/confirm`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overrides, materials_confirmed: true }),
+      });
+    }
+    if (current()) {
+      state.selectedStudyId = copied.study_id;
+      state.selectedProjectId = copied.project_id || study.project_id;
+      state.selectedWorkpieceId = copied.workpiece_id || study.workpiece_id;
+      state.activeTab = wasConfirmed ? "mesh" : "scenario";
+      state.draftSyncedFor = null;
+      state.materialsSyncedFor = null;
+      discardSourceDraft();
+    }
+    if (elements.simulationTimeDialog.dataset.studyId === study.study_id) elements.simulationTimeDialog.close();
+    if (!wasConfirmed) {
+      await loadWorkspace();
+      showToast("仿真时长已写入新草案，请核对材料和输入后再开始仿真");
+      return;
+    }
+    const task = await submitComputation(copied.study_id, "apply_and_solve");
+    if (task) showToast(`已按 ${duration} 秒创建仿真，正在计算`);
+  } catch (error) {
+    if (copied?.study_id) {
+      await recoverCopiedStudy(copied, study, navigationId);
+      if (elements.simulationTimeDialog.dataset.studyId === study.study_id) elements.simulationTimeDialog.close();
+    }
+    showToast(`时间设置失败：${error.message}${copied?.study_id ? "；已保留副本，可在原项目的研究列表继续修改和重试" : ""}`, true);
+  } finally {
+    elements.applySimulationTime.disabled = false;
+    setBusy(false);
+  }
 }
 
 function stopTimePlayback() {
@@ -2465,6 +2906,7 @@ async function selectTimeStep(index) {
   cancelScheduledTimeStep();
   state.timeIndex = index;
   const cacheKey = `${studyId}:${index}`;
+  const ticket = ++state.timeRequest;
   const cached = state.timeFrames.get(cacheKey);
   state.timeLoading = !cached;
   renderTimeControls();
@@ -2476,7 +2918,6 @@ async function selectTimeStep(index) {
     renderResult(state.result);
     return drawWorkpiece();
   }
-  const ticket = ++state.timeRequest;
   try {
     const frame = await request(`/v1/studies/${studyId}/frames/${index}`);
     if (ticket !== state.timeRequest || state.result?.study_id !== studyId) return false;
@@ -2601,6 +3042,7 @@ function renderResult(result) {
 }
 
 function clearComparison() {
+  state.comparisonRequest = (state.comparisonRequest || 0) + 1;
   state.comparison = null;
   state.comparisonCandidateResult = null;
   state.comparisonMode = "baseline";
@@ -2686,7 +3128,8 @@ function formatSignedQuantity(value, unit) {
   return `${sign}${formatNumber(value)} ${unit}`;
 }
 
-async function copySelectedStudy(targetTab = "scenario") {
+async function copySelectedStudy(targetTab = "scenario", overrides = null) {
+  if (state.busy || !await flushDraftBeforeNavigation()) return;
   const study = selectedStudy();
   if (!study?.plan) return;
   setBusy(true);
@@ -2694,8 +3137,13 @@ async function copySelectedStudy(targetTab = "scenario") {
     const copied = await request(`/v1/studies/${study.study_id}/copy`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify(overrides ? { overrides } : {}),
     });
+    if (selectedStudy()?.study_id !== study.study_id) {
+      await loadWorkspace();
+      showToast("研究副本已保存到原项目");
+      return null;
+    }
     state.selectedProjectId = copied.project_id;
     state.selectedWorkpieceId = copied.workpiece_id;
     state.selectedStudyId = copied.study_id;
@@ -2703,6 +3151,7 @@ async function copySelectedStudy(targetTab = "scenario") {
     state.draftSyncedFor = null;
     await loadWorkspace();
     showToast("研究副本已创建，请检查修改并重新确认");
+    return copied;
   } catch (error) {
     showToast(`研究复制失败：${error.message}`, true);
   } finally {
@@ -2711,16 +3160,12 @@ async function copySelectedStudy(targetTab = "scenario") {
 }
 
 async function compareSelectedStudies() {
+  if (state.busy) return;
   stopTimePlayback();
-  cancelScheduledTimeStep();
-  state.timeRequest += 1;
-  state.timeFrame = null;
-  state.timeLoading = false;
-  state.timeFrames.clear();
-  state.timeIndex = Math.max(0, (state.result?.time_steps?.length || 1) - 1);
   const baseline = selectedStudy();
   const candidateId = elements.comparisonCandidate.value;
   if (!baseline || !candidateId) return;
+  const comparisonId = state.comparisonRequest = (state.comparisonRequest || 0) + 1;
   setBusy(true);
   try {
     const [comparison, candidateResult] = await Promise.all([
@@ -2735,6 +3180,14 @@ async function compareSelectedStudies() {
       }),
       request(`/v1/studies/${candidateId}/result`),
     ]);
+    if (comparisonId !== state.comparisonRequest || selectedStudy()?.study_id !== baseline.study_id
+      || elements.comparisonCandidate.value !== candidateId) return;
+    cancelScheduledTimeStep();
+    state.timeRequest += 1;
+    state.timeFrame = null;
+    state.timeLoading = false;
+    state.timeFrames.clear();
+    state.timeIndex = Math.max(0, (state.result?.time_steps?.length || 1) - 1);
     state.comparison = comparison;
     state.comparisonCandidateResult = candidateResult;
     state.comparisonMode = "baseline";
@@ -2743,6 +3196,7 @@ async function compareSelectedStudies() {
     render();
     showToast("研究比较已建立，画布使用统一温标");
   } catch (error) {
+    if (selectedStudy()?.study_id !== baseline.study_id || comparisonId !== state.comparisonRequest) return;
     clearComparison();
     showToast(`研究比较失败：${error.message}`, true);
   } finally {
@@ -2964,6 +3418,7 @@ function applyAgentFormDefaults(study) {
 
 async function runAgent(event) {
   event.preventDefault();
+  if (state.busy) return;
   const study = selectedStudy();
   if (study?.status !== "succeeded" || !state.result) {
     showToast("请先完成一次仿真求解", true);
@@ -2988,6 +3443,11 @@ async function runAgent(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    if (selectedStudy()?.study_id !== study.study_id) {
+      await loadWorkspace();
+      showToast("原研究的 Agent 检查已完成，可在原项目查看");
+      return;
+    }
     state.agentRun = run;
     state.selectedStudyId = run.selected_study_id;
     state.activeTab = "agent";
@@ -3044,12 +3504,22 @@ function renderPrimaryAction() {
   const workpiece = selectedWorkpiece();
   const study = selectedStudy();
   elements.primaryAction.disabled = state.busy;
+  if (activeStudyTask()) {
+    elements.primaryAction.textContent = activeStudyTask().operation === "mesh" ? "网格任务进行中" : "求解任务进行中";
+    elements.primaryAction.disabled = true;
+    return;
+  }
+  if (state.resultLoading && study?.status === "succeeded") {
+    elements.primaryAction.textContent = "求解已完成，正在读取结果…";
+    elements.primaryAction.disabled = true;
+    return;
+  }
   if (state.busy) {
     elements.primaryAction.textContent = "处理中…";
     return;
   }
-  if (activeStudyTask()) {
-    elements.primaryAction.textContent = activeStudyTask().operation === "mesh" ? "网格任务进行中" : "求解任务进行中";
+  if (study && state.confirmingStudyId === study.study_id) {
+    elements.primaryAction.textContent = "正在检查并确认参数…";
     elements.primaryAction.disabled = true;
     return;
   }
@@ -3058,14 +3528,15 @@ function renderPrimaryAction() {
     return;
   }
   if (!workpiece.unit_confirmed) {
-    elements.primaryAction.textContent = "确认 STL 尺度";
+    const destination = state.pendingInputTarget?.workpieceId === workpiece.workpiece_id ? state.pendingInputTarget.target : null;
+    elements.primaryAction.textContent = destination ? `确认尺度并设置${destination === "source" ? "热源" : "材料"}` : "确认 STL 尺度";
     return;
   }
-  if (!study || study.status === "rejected" || study.status === "failed") {
-    elements.primaryAction.textContent = study ? "重新生成草案" : "描述工况并生成草案";
+  if (!study?.plan) {
+    elements.primaryAction.textContent = "开始设置材料与热源";
     return;
   }
-  if (study.status === "needs_input") {
+  if (study.confirmation?.status !== "confirmed" && ["needs_input", "rejected", "failed"].includes(study.status)) {
     if (state.activeTab === "materials") {
       elements.primaryAction.textContent = "下一步：热源与时长";
       elements.primaryAction.disabled = state.busy || !elements.confirmMaterials.checked;
@@ -3081,7 +3552,7 @@ function renderPrimaryAction() {
       || !elements.confirmInputs.checked;
     return;
   }
-  if (["planned", "ready"].includes(study.status)) {
+  if (["planned", "ready"].includes(study.status) || (study.status === "failed" && study.confirmation?.status === "confirmed")) {
     if (workpiece.cad_format === "stl" && study.mesh_status !== "ready") {
       if (study.mesh_status === "generating") {
         elements.primaryAction.textContent = "正在生成网格";
@@ -3096,7 +3567,7 @@ function renderPrimaryAction() {
       }
       return;
     }
-    elements.primaryAction.textContent = "开始求解";
+    elements.primaryAction.textContent = study.status === "failed" ? "重试求解" : "开始求解";
     return;
   }
   if (study.status === "running") {
@@ -3113,6 +3584,7 @@ function renderPrimaryAction() {
 }
 
 async function handlePrimaryAction() {
+  if (state.busy || activeStudyTask()) return;
   const workpiece = selectedWorkpiece();
   const study = selectedStudy();
   if (!workpiece) {
@@ -3123,11 +3595,11 @@ async function handlePrimaryAction() {
     switchTab("geometry");
     return;
   }
-  if (!study || study.status === "rejected" || study.status === "failed") {
-    switchTab("scenario");
+  if (!study?.plan) {
+    await prepareStudyEditor("materials");
     return;
   }
-  if (study.status === "needs_input") {
+  if (study.confirmation?.status !== "confirmed" && ["needs_input", "rejected", "failed"].includes(study.status)) {
     if (state.activeTab === "materials") {
       switchTab("scenario");
       return;
@@ -3139,7 +3611,7 @@ async function handlePrimaryAction() {
     await confirmStudy(study.study_id);
     return;
   }
-  if (["planned", "ready"].includes(study.status)) {
+  if (["planned", "ready"].includes(study.status) || (study.status === "failed" && study.confirmation?.status === "confirmed")) {
     if (workpiece.cad_format === "stl" && study.mesh_status === "needs_review") {
       if (!elements.acceptMeshWarnings.checked) {
         switchTab("mesh");
@@ -3178,6 +3650,7 @@ async function createStudy(workpieceId, purpose = "", overrides = null, planning
         planning_mode: planningMode,
       }),
     });
+    if (selectedWorkpiece()?.workpiece_id !== workpieceId) return null;
     state.selectedStudyId = study.study_id;
     state.activeTab = "scenario";
     state.draftSyncedFor = null;
@@ -3197,6 +3670,7 @@ async function createStudy(workpieceId, purpose = "", overrides = null, planning
 
 async function confirmUnit(event) {
   event.preventDefault();
+  if (state.busy) return;
   const workpiece = selectedWorkpiece();
   if (!workpiece) return;
   setBusy(true);
@@ -3219,8 +3693,11 @@ async function confirmUnit(event) {
         "manual",
       );
       if (study?.status === "needs_input") {
+        const destination = state.pendingInputTarget;
+        state.pendingInputTarget = null;
         switchTab("materials");
-        showToast("尺度已确认：请选择材料，下一步设置热源与时长。手动设置不依赖 AI。");
+        if (destination?.workpieceId === workpiece.workpiece_id && destination.target === "source") openSourceEditor();
+        showToast("尺度已确认，已打开可编辑草案；材料和热源修改会自动保存。");
       }
     }
   } catch (error) {
@@ -3254,6 +3731,7 @@ function rememberModelingStudy(study, { syncFields = false, appendHistory = fals
   if (syncFields) {
     state.draftDirty = false;
     state.draftSaveError = false;
+    state.draftSaveConflict = false;
     state.draftSyncedFor = null;
     state.materialsSyncedFor = null;
     discardSourceDraft();
@@ -3265,12 +3743,21 @@ function rememberModelingStudy(study, { syncFields = false, appendHistory = fals
 function queueDraftSave(event) {
   const study = selectedStudy();
   if (!study?.plan || study.confirmation?.status === "confirmed") return;
-  state.validationFailure = null;
+  if (!state.draftSaveConflict) {
+    state.validationFailure = null;
+    state.draftSaveError = false;
+  }
   if (event?.target && elements.componentMaterialList.contains(event.target)) {
     resetMaterialConfirmation();
   }
   const source = activeSourceDraft();
   const sourceCollection = activeSourceCollection();
+  if (event?.target === elements.draftDuration) {
+    syncDurationTimeStep(elements.draftDuration, elements.draftTimeStep);
+    if (sourceCollection && elements.draftTimeStep.checkValidity()) {
+      sourceCollection.timeWindow.timeStep = Number(elements.draftTimeStep.value);
+    }
+  }
   if (source && event?.target) {
     for (const [id, field] of [["draftSourcePower", "power"], ["draftSourceRadius", "radius"]]) {
       if (event.target.id === id && event.target.value !== "" && event.target.checkValidity()) {
@@ -3283,6 +3770,15 @@ function queueDraftSave(event) {
         sourceCollection[field] = Number(event.target.value);
         syncSourceEditor();
       }
+    }
+  }
+  if (sourceCollection && event?.target) {
+    const timeField = {
+      draftInitialTemperature: "initialTemperature", draftDuration: "duration", draftTimeStep: "timeStep",
+    }[event.target.id];
+    if (timeField && event.target.value !== "" && event.target.checkValidity()) {
+      sourceCollection.timeWindow[timeField] = Number(event.target.value);
+      syncSourceEditor();
     }
   }
   state.draftDirty = true;
@@ -3303,7 +3799,7 @@ async function saveStructuredDraft() {
   }
   const study = selectedStudy();
   if (!study?.plan || !state.draftDirty || study.confirmation?.status === "confirmed") return;
-  if (state.draftSaveError) throw new Error("草案保存存在冲突，请先检查服务器状态");
+  if (state.draftSaveConflict) throw new Error("服务器草案已更新，请先载入最新草案后再修改");
   if (!draftFieldsValid()) {
     elements.draftSaveStatus.textContent = "未保存：请补齐有效参数";
     state.validationFailure = {studyId: study.study_id, message: '草案尚未保存：请补齐有效参数。点击确认时会定位未通过输入检查的字段。'};
@@ -3318,16 +3814,25 @@ async function saveStructuredDraft() {
       const updated = await request(`/v1/studies/${study.study_id}/draft`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
-      if (state.selectedStudyId === study.study_id && state.draftEditSerial === editSerial) state.draftDirty = false;
+      if (state.selectedStudyId === study.study_id) {
+        if (state.draftEditSerial === editSerial) state.draftDirty = false;
+        state.draftSaveError = false;
+        state.draftSaveConflict = false;
+      }
       rememberModelingStudy(updated);
     } catch (error) {
+      if (state.selectedStudyId !== study.study_id) throw error;
       state.draftSaveError = true;
-      state.validationFailure = {studyId: study.study_id, message: `草案未保存：${error.message}`};
+      state.draftSaveConflict = error.status === 409;
+      state.validationFailure = {studyId: study.study_id, message: `草案未保存：${error.message}`,
+        fields: error.fields || [], issues: error.validationIssues || []};
       renderModeling();
       showToast(`草案未保存：${error.message}`, true);
       throw error;
     } finally {
       state.draftSavePromise = null;
+      renderModeling();
+      renderPrimaryAction();
     }
   })();
   await state.draftSavePromise;
@@ -3340,11 +3845,51 @@ async function flushDraftBeforeNavigation() {
   catch (error) { showToast(error.message, true); return false; }
 }
 
+let agentButtonController = null;
+
+function renderModelingSidebar() {
+  document.body.classList.toggle("agent-sidebar-open", state.modelingSidebarOpen);
+  elements.modelingDrawer.hidden = !state.modelingSidebarOpen;
+  elements.modelingBackdrop.hidden = !state.modelingSidebarOpen;
+  elements.modelingNav.hidden = state.modelingSidebarOpen;
+  if (!state.modelingSidebarOpen) agentButtonController?.restore();
+  elements.modelingNav.setAttribute("aria-expanded", String(state.modelingSidebarOpen));
+}
+
+function setModelingSidebarOpen(open, { focus = false } = {}) {
+  state.modelingSidebarOpen = open;
+  renderModelingSidebar();
+  persistWorkspaceState();
+  if (focus) {
+    const target = open
+      ? elements.modelingForm.hidden ? elements.closeModelingSidebar : elements.modelingInput
+      : elements.modelingNav;
+    target.focus({ preventScroll: true });
+  }
+}
+
 function renderModeling() {
   renderValidationFeedback();
   const study = selectedStudy();
-  elements.modelingDrawer.hidden = !study?.plan;
-  if (!study?.plan) return;
+  elements.draftRecovery.hidden = !state.draftSaveError || !study?.plan;
+  elements.draftRecoveryMessage.textContent = state.draftSaveConflict
+    ? "服务器上的草案已有更新。请载入最新版本后再修改。"
+    : "修改尚未保存。请检查参数或连接，再重试保存；当前填写内容仍保留。";
+  elements.retryDraftSave.hidden = Boolean(state.draftSaveConflict);
+  elements.retryDraftSave.disabled = Boolean(state.draftSavePromise);
+  elements.reloadDraftRecovery.hidden = !state.draftSaveConflict;
+  renderModelingSidebar();
+  elements.modelingContext.textContent = study?.plan?.study_name || "未选择仿真草案";
+  if (!study?.plan) {
+    elements.draftSaveStatus.textContent = "等待选择工件";
+    elements.modelingIntro.textContent = "选择一个工件并创建仿真草案，就可以在这里描述工况、补充参数。";
+    elements.modelingProvider.textContent = "热仿真参数助手";
+    elements.refreshModelingProvider.hidden = true;
+    elements.modelingMessages.replaceChildren();
+    for (const node of [elements.modelingForm, elements.modelingQuestions, elements.modelingProposal,
+      elements.modelingPrivacy, elements.modelingRequestStatus, elements.modelingExamples]) node.hidden = true;
+    return;
+  }
   const session = study.modeling || {};
   const proposal = session.proposal;
   const confirmed = study.confirmation?.status === "confirmed";
@@ -3355,6 +3900,27 @@ function renderModeling() {
     paragraph.dataset.role = message.role;
     return paragraph;
   }));
+  const provider = state.health?.modeling_agent;
+  const unavailable = provider?.configured === false;
+  elements.modelingProvider.textContent = provider?.provider === "glm"
+    ? `GLM · ${provider.model} · ${unavailable ? "待配置" : "已配置"}` : "热仿真参数助手";
+  elements.modelingProvider.dataset.ready = String(!unavailable);
+  elements.refreshModelingProvider.hidden = !unavailable;
+  elements.modelingIntro.textContent = confirmed
+    ? "当前研究的输入已确认。请复制研究为新草案，再让助手帮你修改参数。"
+    : unavailable ? provider.message
+    : "描述材料、热源、温度和时间，助手会整理参数并追问缺项。查看修改后应用到草案，再复核并确认仿真。";
+  elements.modelingExamples.hidden = confirmed || history.length > 0;
+  elements.modelingExamples.querySelectorAll("button").forEach(button => {
+    button.disabled = state.modelingBusy || Boolean(proposal);
+  });
+  const questionList = session.questions || [];
+  elements.modelingQuestions.hidden = confirmed || questionList.length === 0;
+  elements.modelingQuestionList.replaceChildren(...questionList.map(question => createElement("li", "", question)));
+  const error = state.modelingError?.studyId === study.study_id ? state.modelingError.message : null;
+  elements.modelingRequestStatus.hidden = !state.modelingBusy && !error;
+  elements.modelingRequestStatus.textContent = state.modelingBusy ? "正在理解工况并整理参数…" : error || "";
+  elements.modelingRequestStatus.dataset.error = String(Boolean(error));
   elements.modelingPrivacy.hidden = session.history_retained !== false;
   elements.draftSaveStatus.textContent = state.draftSaveError ? "保存失败，请检查" : state.modelingBusy ? "正在生成建议"
     : confirmed ? "输入已确认" : state.draftDirty ? "有未保存修改" : proposal ? "有待应用建议" : "草案已保存";
@@ -3367,7 +3933,8 @@ function renderModeling() {
   }));
   elements.modelingValidation.replaceChildren(...(proposal?.validation_errors || []).map(error => createElement("li", "", error)));
   elements.modelingForm.hidden = confirmed;
-  elements.sendModeling.disabled = state.busy || state.modelingBusy || Boolean(proposal) || state.draftSaveError;
+  elements.sendModeling.disabled = state.busy || state.modelingBusy || Boolean(proposal) || state.draftSaveError || unavailable;
+  elements.sendModeling.textContent = state.modelingBusy ? "整理中…" : "发送";
   elements.applyModeling.disabled = state.busy || state.modelingBusy || state.draftDirty || state.draftSaveError;
   elements.dismissModeling.disabled = state.busy || state.modelingBusy;
   elements.undoModeling.hidden = !session.undo_plan || confirmed;
@@ -3386,6 +3953,7 @@ function highlightModelingFields(fields, applied) {
     purpose: ["studyPurpose"], analysis_type: ["draftAnalysisType"], initial_temperature_k: ["draftInitialTemperature"],
     duration_s: ["draftDuration"], time_step_s: ["draftTimeStep"], heat_source_enabled: ["draftEnableHeatSource"],
     global_convection_enabled: ["draftEnableGlobalConvection"], heat_source: ["draftSourcePower", "draftSourceRadius"],
+    heat_sources: ["sourceEditor"],
     convection: ["draftAmbient", "draftConvection"], boundaries: ["fixedBoundaryEditor"], surface_conditions: ["surfaceThermalEditor"],
     contacts: ["thermalContactEditor"],
     component_materials: ["componentMaterialList"], material: ["componentMaterialList"], mesh: ["draftMeshSize"], criteria: ["draftCriterionMax"],
@@ -3406,6 +3974,7 @@ async function sendModelingMessage(event) {
   const message = elements.modelingInput.value.trim();
   if (!message || study?.modeling?.proposal || state.modelingBusy) return;
   state.modelingBusy = true;
+  state.modelingError = null;
   renderModeling();
   try {
     const updated = await request(`/v1/studies/${study.study_id}/modeling/messages`, {
@@ -3416,9 +3985,12 @@ async function sendModelingMessage(event) {
     rememberModelingStudy(updated);
     if (state.selectedStudyId === study.study_id) {
       elements.modelingInput.value = "";
-      elements.modelingDrawer.open = true;
+      setModelingSidebarOpen(true);
     }
-  } catch (error) { showToast(`未生成建议：${error.message}`, true); }
+  } catch (error) {
+    state.modelingError = { studyId: study.study_id, message: `未生成建议：${error.message}` };
+    showToast(state.modelingError.message, true);
+  }
   finally { state.modelingBusy = false; renderModeling(); }
 }
 
@@ -3427,7 +3999,7 @@ async function decideModeling(action) {
   const study = selectedStudy();
   state.modelingBusy = true;
   state.modelingDecisionBusy = true;
-  const frozen = [...document.querySelectorAll("#structuredInputs input, #structuredInputs select, #structuredInputs button, #componentMaterialList input, #componentMaterialList select, #sourceEditor input, #sourceEditor select, #sourceEditor button, #studyPurpose, #draftMeshSize")]
+  const frozen = [...document.querySelectorAll("#structuredInputs input, #structuredInputs select, #structuredInputs button, #componentMaterialList input, #componentMaterialList select, #sourceEditor input, #sourceEditor select, #sourceEditor button, #studyPurpose, #draftMeshSize, #draftMeshMethod")]
     .map(node => [node, node.disabled]);
   frozen.forEach(([node]) => { node.disabled = true; });
   renderModeling();
@@ -3450,6 +4022,16 @@ async function decideModeling(action) {
   }
 }
 
+async function retryDraftSave() {
+  if (state.draftSavePromise || state.draftSaveConflict) return;
+  try {
+    await saveStructuredDraft();
+    renderModeling();
+    renderPrimaryAction();
+    if (!state.draftDirty) showToast("草案已保存，可以继续设置或仿真");
+  } catch (error) { showToast(error.message, true); }
+}
+
 async function reloadModelingDraft() {
   if (state.draftDirty && !window.confirm("重新载入会放弃当前页面未保存的修改，是否继续？")) return;
   try {
@@ -3460,6 +4042,7 @@ async function reloadModelingDraft() {
 
 async function generateStudyDraft(event) {
   event.preventDefault();
+  if (state.busy || !await flushDraftBeforeNavigation()) return;
   const workpiece = selectedWorkpiece();
   if (!workpiece?.unit_confirmed) {
     switchTab("geometry");
@@ -3510,12 +4093,21 @@ function confirmedOverrides() {
     ...(elements.draftEnableGlobalConvection.checked ? {
       ambient_temperature_k: Number(elements.draftAmbient.value), convection_coefficient_w_m2_k: Number(elements.draftConvection.value),
     } : {}),
+    solver_backend: elements.draftMeshMethod.value || plan.solver.backend,
     target_element_size_mm: Number(elements.draftMeshSize.value),
     criteria,
   };
 }
 
 async function confirmStudy(studyId) {
+  if (state.confirmingStudyId) return;
+  state.confirmingStudyId = studyId;
+  renderPrimaryAction();
+  try { return await confirmStudyInputs(studyId); }
+  finally { state.confirmingStudyId = null; renderPrimaryAction(); }
+}
+
+async function confirmStudyInputs(studyId) {
   const inputConflict = renderValidationFeedback().find(issue => issue.severity === 'error');
   if (state.draftDirty && inputConflict?.fields?.length) {
     locateValidationFields(inputConflict.fields);
@@ -3534,7 +4126,7 @@ async function confirmStudy(studyId) {
     return;
   }
   if (state.modelingBusy || selectedStudy()?.modeling?.proposal) {
-    elements.modelingDrawer.open = true;
+    setModelingSidebarOpen(true);
     showToast("请先处理建模建议，再确认输入", true);
     return;
   }
@@ -3546,6 +4138,12 @@ async function confirmStudy(studyId) {
     switchTab("materials");
     elements.confirmMaterials.focus();
     showToast("请先逐组件核对并确认材料及热物性", true);
+    return;
+  }
+  if (!elements.confirmInputs.checked) {
+    switchTab("scenario");
+    elements.confirmInputs.focus();
+    showToast("请检查当前工况并勾选确认，再开始仿真", true);
     return;
   }
   const invalidMaterialInput = [
@@ -3568,11 +4166,15 @@ async function confirmStudy(studyId) {
         materials_confirmed: true,
       }),
     });
-    state.activeTab = "mesh";
+    if (state.selectedStudyId === studyId) {
+      discardSourceDraft();
+      state.activeTab = "mesh";
+    }
     await loadWorkspace();
     await submitComputation(studyId, "apply_and_solve");
   } catch (error) {
-    state.validationFailure = {studyId, message: `参数确认失败：${error.message}`};
+    state.validationFailure = {studyId, message: `参数确认失败：${error.message}`,
+      fields: error.fields || [], issues: error.validationIssues || []};
     renderValidationFeedback();
     showToast(`参数确认失败：${error.message}`, true);
   } finally {
@@ -3592,8 +4194,10 @@ async function confirmMeshReview(studyId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accept_warnings: true }),
     });
-    state.activeTab = "mesh";
-    state.visualizationMode = "mesh";
+    if (state.selectedStudyId === studyId) {
+      state.activeTab = "mesh";
+      state.visualizationMode = "mesh";
+    }
     await loadWorkspace();
     await runStudy(studyId);
   } catch (error) {
@@ -3618,6 +4222,12 @@ function renderComputationStatus() {
   const task = state.tasks.find(item => item.study_id === state.selectedStudyId);
   elements.computationStatus.hidden = !task;
   if (!task) return;
+  if (!TASK_TERMINAL_STATES.has(task.status)) {
+    applyStatusBadge('running');
+    elements.workspaceState.textContent = task.status === 'queued' ? '任务排队中'
+      : task.status === 'cancelling' ? '正在取消计算'
+      : task.operation === 'mesh' ? '正在生成网格' : '仿真计算中';
+  }
   const labels = { queued: "排队中", running: "计算中", cancelling: "正在取消", succeeded: "已完成",
     needs_review: "待检查网格", cancelled: "已取消", failed: "未完成", timed_out: "已超时", interrupted: "计算中断" };
   elements.computationTitle.textContent = task.operation === "mesh" ? "网格生成" : "热场求解";
@@ -3688,7 +4298,9 @@ async function submitComputation(studyId, operation) {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operation }),
     });
     state.tasks = [task, ...state.tasks.filter(item => item.task_id !== task.task_id)];
-    state.activeTab = operation === "mesh" ? "mesh" : "solve";
+    if (state.selectedStudyId === studyId) state.activeTab = operation === "mesh" ? "mesh" : "solve";
+    setBusy(false);
+    scheduleTaskPoll();
     await loadWorkspace();
     showToast(operation === "mesh" ? "网格任务已提交" : "求解任务已提交");
     return task;
@@ -3719,9 +4331,11 @@ async function cancelComputation() {
 
 function setBusy(busy) {
   state.busy = busy;
+  elements.unitForm.querySelector('button[type="submit"]').disabled = busy;
+  elements.manualDraftButton.disabled = busy || !selectedWorkpiece();
   elements.submitWorkpieceButton.disabled = busy;
   elements.submitWorkpieceButton.textContent = busy ? "正在检查…" : "导入并检查";
-  elements.materialsCreateDraftButton.disabled = busy || !selectedWorkpiece()?.unit_confirmed;
+  elements.materialsCreateDraftButton.disabled = busy || !selectedWorkpiece();
   elements.generateDraftButton.disabled = busy;
   elements.generateDraftButton.textContent = busy ? "正在生成…" : "生成仿真草案";
   elements.applySourceButton.disabled = busy;
@@ -3730,6 +4344,12 @@ function setBusy(busy) {
     : selectedStudy()?.confirmation?.status === "confirmed" ? "应用并求解" : "应用到草案";
   elements.runAgentButton.disabled = busy || selectedStudy()?.status !== "succeeded";
   elements.runAgentButton.textContent = busy ? "正在检查与优化…" : "检查目标并自动优化";
+  renderComponents();
+  renderMaterialsPanel();
+  renderModeling();
+  renderMeshPanel();
+  renderTimeControls();
+  syncSourceConvectionControls();
   renderComparisonTool();
   renderPrimaryAction();
 }
@@ -3783,6 +4403,15 @@ function sourceDraftFromPlan(study) {
     || [0, 0, 0, ...Object.values(selectedWorkpiece()?.dimensions_mm || { x: 1, y: 1, z: 1 })];
   const collection = ThermoFlowSources.createCollection(study.plan, bbox);
   collection.studyId = study.study_id;
+  if (study.confirmation?.status !== 'confirmed' && state.draftSyncedFor === study.study_id) {
+    const current = (input, fallback) => input?.value !== '' && input?.value != null
+      && Number.isFinite(Number(input.value)) ? Number(input.value) : fallback;
+    collection.timeWindow.duration = current(elements.draftDuration, collection.timeWindow.duration);
+    collection.timeWindow.timeStep = current(elements.draftTimeStep, collection.timeWindow.timeStep);
+    collection.timeWindow.initialTemperature = current(elements.draftInitialTemperature, collection.timeWindow.initialTemperature);
+    collection.ambientTemperature = current(elements.draftAmbient, collection.ambientTemperature);
+    collection.convectionCoefficient = current(elements.draftConvection, collection.convectionCoefficient);
+  }
   const mappings = state.result?.study_id === study.study_id
     ? state.result.heat_source_mappings?.length
       ? state.result.heat_source_mappings
@@ -3825,13 +4454,15 @@ function activeSourceDraft(create = false) {
 }
 
 function heatSourceEnabled(plan) {
-  if (!ThermoFlowSources.sourcesFromPlan(plan).length) return false;
+  if (!plan) return false;
   if (plan === selectedStudy()?.plan && state.draftSyncedFor === selectedStudy()?.study_id
     && selectedStudy()?.confirmation?.status !== "confirmed") return elements.draftEnableHeatSource.checked;
-  return plan.heat_source_enabled !== false;
+  return plan.heat_source_enabled !== false && ThermoFlowSources.sourcesFromPlan(plan).length > 0;
 }
 
 function displayedHeatSources(plan) {
+  if (plan === selectedStudy()?.plan && selectedStudy()?.confirmation?.status !== "confirmed"
+    && !heatSourceEnabled(plan)) return [];
   const collection = activeSourceCollection();
   if (collection) return collection.sources.map(ThermoFlowSources.toPlanSource);
   return heatSourceEnabled(plan) ? ThermoFlowSources.sourcesFromPlan(plan) : [];
@@ -3876,28 +4507,25 @@ function syncSourceShapeFields() {
   const line = draft.shape === "line";
   const surface = draft.shape === "surface";
   const volume = draft.shape === "volume";
-  elements.canvasSourceDepthField.hidden = draft.placement !== "embedded";
-  elements.canvasSourceRadiusField.hidden = surface || volume;
+  const setFields = (fields, visible) => fields.forEach(field => {
+    field.hidden = !visible;
+    field.querySelectorAll("input, select").forEach(input => {
+      input.disabled = !visible || Boolean(state.modelingDecisionBusy);
+      input.required = visible;
+    });
+  });
+  setFields([elements.canvasSourceDepthField], draft.placement === "embedded");
+  setFields([elements.canvasSourceRadiusField], !surface && !volume);
   elements.canvasSourceRadiusLabel.innerHTML = line ? "线半径 <i>mm</i>" : "点半径 <i>mm</i>";
-  [elements.canvasSourceEndXField, elements.canvasSourceEndYField, elements.canvasSourceEndZField]
-    .forEach((field) => { field.hidden = !line; });
-  [
-    elements.canvasSourceSurfaceAxisField,
-    elements.canvasSourceWidthField,
-    elements.canvasSourceHeightField,
-    elements.canvasSourceThicknessField,
-  ].forEach((field) => { field.hidden = !surface; });
-  [elements.canvasSourceEndX, elements.canvasSourceEndY, elements.canvasSourceEndZ]
-    .forEach((input) => { input.required = line; });
-  [elements.canvasSourceWidth, elements.canvasSourceHeight, elements.canvasSourceThickness]
-    .forEach((input) => { input.required = surface; });
-  [
-    elements.canvasSourceVolumeWidthField,
-    elements.canvasSourceVolumeHeightField,
+  setFields([elements.canvasSourceEndXField, elements.canvasSourceEndYField, elements.canvasSourceEndZField], line);
+  setFields([
+    elements.canvasSourceSurfaceAxisField, elements.canvasSourceWidthField,
+    elements.canvasSourceHeightField, elements.canvasSourceThicknessField,
+  ], surface);
+  setFields([
+    elements.canvasSourceVolumeWidthField, elements.canvasSourceVolumeHeightField,
     elements.canvasSourceVolumeDepthField,
-  ].forEach((field) => { field.hidden = !volume; });
-  [elements.canvasSourceVolumeWidth, elements.canvasSourceVolumeHeight, elements.canvasSourceVolumeDepth]
-    .forEach((input) => { input.required = volume; });
+  ], volume);
 }
 
 function syncSourceList() {
@@ -3933,6 +4561,20 @@ function syncSourceList() {
   elements.deleteHeatSource.textContent = collection.sources.length <= 1
     ? "至少保留一个" : `删除当前：${collection.sources[collection.activeIndex].name}`;
   elements.addHeatSource.disabled = collection.sources.length >= 16 || state.modelingDecisionBusy;
+}
+
+function syncSourceConvectionControls() {
+  const study = selectedStudy();
+  const enabled = study?.confirmation?.status === "confirmed"
+    ? Boolean(study.plan?.convection && study.plan.global_convection_enabled)
+    : Boolean(elements.draftEnableGlobalConvection.checked);
+  for (const input of [elements.canvasAmbientTemperature, elements.canvasConvectionCoefficient]) {
+    input.disabled = !enabled || Boolean(state.busy || state.modelingDecisionBusy);
+    input.required = enabled;
+    input.title = enabled ? "" : "全局对流未启用；可在工况中开启";
+  }
+  const notice = document.getElementById("canvasConvectionNotice");
+  if (notice) notice.hidden = enabled;
 }
 
 function syncSourceEditor() {
@@ -3973,6 +4615,7 @@ function syncSourceEditor() {
   elements.canvasDuration.value = String(collection.timeWindow.duration);
   elements.canvasTimeStep.value = String(collection.timeWindow.timeStep);
   syncSourceShapeFields();
+  syncSourceConvectionControls();
   updateSourcePositionReadout();
 }
 
@@ -3990,24 +4633,37 @@ function positionSourceEditor() {
 }
 
 function openSourceEditor() {
+  const workpiece = selectedWorkpiece();
+  if (!workpiece?.unit_confirmed) { queueEditorAfterScale("source"); return; }
+  if (!selectedStudy()?.plan) return prepareStudyEditor("source");
+  if (state.comparison) clearComparison();
   if (!activeSourceDraft(true)) return;
-  if (selectedStudy()?.confirmation?.status !== "confirmed") {
-    elements.draftEnableHeatSource.checked = true;
+  // Opening an editor is read-only; heat is enabled by an explicit edit or Apply.
+  if (!state.sourceEditorBaseline || state.sourceEditorBaseline.studyId !== selectedStudy().study_id) {
+    state.sourceEditorBaseline = {
+      studyId: selectedStudy().study_id,
+      collection: JSON.parse(JSON.stringify(activeSourceCollection())),
+      heatEnabled: elements.draftEnableHeatSource.checked,
+      previewDirty: Boolean(state.sourcePreviewDirty),
+    };
   }
   syncSourceEditor();
   elements.sourceEditorSlot.hidden = false;
   elements.sourceEditor.hidden = false;
   elements.sourceEditButton.classList.add("is-active");
   positionSourceEditor();
-  if (window.matchMedia("(max-width: 680px)").matches) {
-    elements.sourceEditorSlot.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }
+  elements.sourceEditButton.setAttribute("aria-expanded", "true");
+  elements.heatSourceNav.setAttribute("aria-expanded", "true");
+  elements.canvasSourceName.focus({ preventScroll: true });
 }
 
 function closeSourceEditor() {
+  state.sourceEditorBaseline = null;
   elements.sourceEditor.hidden = true;
   elements.sourceEditorSlot.hidden = true;
   elements.sourceEditButton.classList.remove("is-active");
+  elements.sourceEditButton.setAttribute("aria-expanded", "false");
+  elements.heatSourceNav.setAttribute("aria-expanded", "false");
 }
 
 function discardSourceDraft() {
@@ -4019,10 +4675,28 @@ function discardSourceDraft() {
 }
 
 function resetSourceEditor() {
-  state.sourceDraft = sourceDraftFromPlan(selectedStudy());
-  state.sourcePreviewDirty = false;
+  const study = selectedStudy();
+  const baseline = state.sourceEditorBaseline;
+  if (!study?.plan || !baseline || baseline.studyId !== study.study_id) return;
+  state.sourceDraft = JSON.parse(JSON.stringify(baseline.collection));
+  state.sourcePreviewDirty = baseline.previewDirty;
+  const collection = activeSourceCollection();
+  const draft = activeSourceDraft();
+  if (study.confirmation?.status !== "confirmed") {
+    elements.draftEnableHeatSource.checked = baseline.heatEnabled;
+    elements.draftSourcePower.value = String(draft.power);
+    elements.draftSourceRadius.value = String(draft.radius);
+    elements.draftAmbient.value = String(collection.ambientTemperature);
+    elements.draftConvection.value = String(collection.convectionCoefficient);
+    if (study.plan.analysis_type === "transient_conduction") {
+      elements.draftDuration.value = String(collection.timeWindow.duration);
+      elements.draftTimeStep.value = String(collection.timeWindow.timeStep);
+    }
+    queueDraftSave();
+  }
   syncSourceEditor();
   startHeatAnimation();
+  showToast("已撤销本次热源编辑");
 }
 
 function selectHeatSource(index, { readInputs = true, openEditor = false } = {}) {
@@ -4078,6 +4752,13 @@ function updateSourceDraftFromInputs(event, { markDirty = true } = {}) {
   const draft = activeSourceDraft();
   const collection = activeSourceCollection();
   if (!draft || !collection) return;
+  if (event?.target === elements.canvasDuration) {
+    syncDurationTimeStep(elements.canvasDuration, elements.canvasTimeStep);
+  }
+  const sourceEdit = markDirty && ![
+    elements.canvasAmbientTemperature, elements.canvasConvectionCoefficient,
+    elements.canvasDuration, elements.canvasTimeStep,
+  ].includes(event?.target);
   const numericValue = (input, fallback) => {
     const value = Number(input.value);
     return input.value !== "" && Number.isFinite(value) ? value : fallback;
@@ -4112,6 +4793,7 @@ function updateSourceDraftFromInputs(event, { markDirty = true } = {}) {
   collection.timeWindow.duration = numericValue(elements.canvasDuration, collection.timeWindow.duration);
   collection.timeWindow.timeStep = numericValue(elements.canvasTimeStep, collection.timeWindow.timeStep);
   if (selectedStudy()?.confirmation?.status !== "confirmed") {
+    if (sourceEdit) elements.draftEnableHeatSource.checked = true;
     elements.draftSourcePower.value = elements.canvasSourcePower.value;
     elements.draftSourceRadius.value = elements.canvasSourceRadius.value;
     elements.draftAmbient.value = elements.canvasAmbientTemperature.value;
@@ -4120,10 +4802,9 @@ function updateSourceDraftFromInputs(event, { markDirty = true } = {}) {
       elements.draftDuration.value = elements.canvasDuration.value;
       elements.draftTimeStep.value = elements.canvasTimeStep.value;
     }
-    queueDraftSave();
+    if (markDirty) queueDraftSave();
   }
-  if (markDirty
-    && ![elements.canvasAmbientTemperature, elements.canvasConvectionCoefficient].includes(event?.target)) {
+  if (sourceEdit) {
     state.sourcePreviewDirty = true;
   }
   syncSourceShapeFields();
@@ -4157,8 +4838,10 @@ function simulationOverridesFromDraft(plan, draft) {
     enable_heat_source: true,
     enable_global_convection: plan.global_convection_enabled,
     ...timeOverrides,
-    ambient_temperature_k: collection.ambientTemperature,
-    convection_coefficient_w_m2_k: collection.convectionCoefficient,
+    ...(plan.global_convection_enabled ? {
+      ambient_temperature_k: collection.ambientTemperature,
+      convection_coefficient_w_m2_k: collection.convectionCoefficient,
+    } : {}),
     target_element_size_mm: plan.mesh.target_element_size_mm,
     max_axis_intervals: plan.mesh.max_axis_intervals,
     relative_tolerance: plan.solver.relative_tolerance,
@@ -4170,27 +4853,33 @@ function simulationOverridesFromDraft(plan, draft) {
 
 async function applySourceChanges(event) {
   event.preventDefault();
-  if (!elements.sourceEditor.reportValidity()) return;
+  if (state.busy || !elements.sourceEditor.reportValidity()) return;
+  const study = selectedStudy();
+  if (!study?.plan) return;
+  const navigationId = state.navigationRequest || 0;
+  const current = () => selectedStudy()?.study_id === study.study_id
+    && (state.navigationRequest || 0) === navigationId;
   updateSourceDraftFromInputs();
-  if (selectedStudy()?.confirmation?.status !== "confirmed") {
+  if (study.confirmation?.status !== "confirmed") {
     if (!await flushDraftBeforeNavigation()) return;
-    closeSourceEditor();
-    switchTab("scenario");
+    if (current()) {
+      discardSourceDraft();
+      switchTab("scenario");
+    }
     showToast("热源已更新到草案，请检查并确认全部输入后求解");
     return;
   }
-  const study = selectedStudy();
   const draft = activeSourceDraft();
-  if (!study?.plan || !draft) return;
+  if (!draft) return;
+  const overrides = JSON.parse(JSON.stringify(simulationOverridesFromDraft(study.plan, draft)));
+  const purpose = study.purpose || study.plan.purpose || "";
   setBusy(true);
+  let nextStudy = null;
   try {
-    const nextStudy = await request(`/v1/studies/${study.study_id}/copy`, {
+    nextStudy = await request(`/v1/studies/${study.study_id}/copy`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        overrides: simulationOverridesFromDraft(study.plan, draft),
-        purpose: study.purpose || study.plan.purpose || "",
-      }),
+      body: JSON.stringify({ overrides, purpose }),
     });
     if (nextStudy.status !== "needs_input") {
       throw new Error(nextStudy.failure || "热源参数未通过校验");
@@ -4198,19 +4887,20 @@ async function applySourceChanges(event) {
     await request(`/v1/studies/${nextStudy.study_id}/confirm`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        overrides: simulationOverridesFromDraft(study.plan, draft),
-        purpose: study.purpose || study.plan.purpose || "",
-        materials_confirmed: true,
-      }),
+      body: JSON.stringify({ overrides, purpose, materials_confirmed: true }),
     });
-    state.selectedStudyId = nextStudy.study_id;
-    state.activeTab = "mesh";
-    discardSourceDraft();
+    if (current()) {
+      state.selectedStudyId = nextStudy.study_id;
+      state.selectedProjectId = nextStudy.project_id || study.project_id;
+      state.selectedWorkpieceId = nextStudy.workpiece_id || study.workpiece_id;
+      state.activeTab = "mesh";
+      discardSourceDraft();
+    }
     const task = await submitComputation(nextStudy.study_id, "apply_and_solve");
     if (task) showToast("参数已应用到新研究，后台计算已提交");
   } catch (error) {
-    showToast(`热源求解失败：${error.message}`, true);
+    if (nextStudy?.study_id) await recoverCopiedStudy(nextStudy, study, navigationId);
+    showToast(`热源求解失败：${error.message}${nextStudy?.study_id ? "；已保留副本，可在原项目的研究列表继续修改和重试" : ""}`, true);
   } finally {
     setBusy(false);
   }
@@ -4234,16 +4924,25 @@ function openWorkpieceDialog() {
 
 function updateUploadSourceFields() {
   const shape = elements.heatSourceShape.value;
+  const automatic = state.parameterMode !== "custom";
+  elements.customParameterFields.querySelectorAll("input, select").forEach(input => {
+    input.disabled = automatic;
+  });
   document.querySelectorAll("[data-upload-hide-for]").forEach((field) => {
     field.hidden = field.dataset.uploadHideFor.split(/\s+/).includes(shape);
+    field.querySelectorAll("input, select").forEach(input => { input.disabled = automatic || field.hidden; });
   });
   document.querySelectorAll("[data-upload-source]").forEach((field) => {
     const visible = field.dataset.uploadSource === shape;
     field.hidden = !visible;
-    field.querySelectorAll("input, select").forEach((input) => { input.required = visible; });
+    field.querySelectorAll("input, select").forEach((input) => {
+      input.required = visible && !automatic;
+      input.disabled = automatic || !visible;
+    });
   });
   document.querySelectorAll("[data-upload-placement]").forEach((field) => {
     field.hidden = field.dataset.uploadPlacement !== elements.heatSourcePlacement.value;
+    field.querySelectorAll("input, select").forEach(input => { input.disabled = automatic || field.hidden; });
   });
 }
 
@@ -4259,6 +4958,7 @@ function setParameterMode(mode) {
   elements.autoModeButton.setAttribute("aria-selected", String(automatic));
   elements.customModeButton.setAttribute("aria-selected", String(!automatic));
   elements.customParameterFields.hidden = automatic;
+  updateUploadSourceFields();
 }
 
 function collectUploadOverrides() {
@@ -4292,7 +4992,10 @@ function collectUploadOverrides() {
     relative_tolerance: "relativeTolerance",
     max_iterations: "maxIterations",
   };
-  const valueOf = (id) => document.getElementById(id)?.value?.trim() || "";
+  const valueOf = (id) => {
+    const input = document.getElementById(id);
+    return input?.disabled ? "" : input?.value?.trim() || "";
+  };
   const numberValue = (id) => {
     const raw = valueOf(id);
     if (!raw) return null;
@@ -4330,6 +5033,7 @@ function collectUploadOverrides() {
 
 async function submitWorkpiece(event) {
   event.preventDefault();
+  if (state.busy || !await flushDraftBeforeNavigation()) return;
   setBusy(true);
   try {
     const file = elements.cadFile.files[0];
@@ -4355,6 +5059,8 @@ async function submitWorkpiece(event) {
     state.selectedProjectId = workpiece.project_id;
     state.selectedWorkpieceId = workpiece.workpiece_id;
     state.selectedStudyId = null;
+    discardSourceDraft();
+    resetComponentView();
     resetStlView(false);
     state.activeTab = "geometry";
     state.draftSyncedFor = null;
@@ -5666,6 +6372,7 @@ function distanceToHeatSource(point, source) {
 
 function resetStlView(redraw = true) {
   engineeringViewport?.fit();
+  document.getElementById('standardView').value = 'iso';
   state.view.yaw = -Math.PI / 5;
   state.view.pitch = 0.42;
   state.viewDrag = null;
@@ -6040,27 +6747,57 @@ function showToast(message, isError = false) {
   toastTimer = window.setTimeout(() => elements.toast.classList.remove("is-visible"), 3200);
 }
 
-elements.refreshButton.addEventListener("click", () => loadWorkspace());
+elements.refreshButton.addEventListener("click", async () => {
+  if (await flushDraftBeforeNavigation()) await loadWorkspace();
+});
 elements.newWorkpieceButton.addEventListener("click", openWorkpieceDialog);
 elements.workpieceSearch.addEventListener("input", renderWorkpieces);
 elements.primaryAction.addEventListener("click", handlePrimaryAction);
 elements.geometryNav.addEventListener("click", () => switchTab("geometry"));
-elements.materialsNav.addEventListener("click", () => switchTab("materials"));
+elements.materialsNav.addEventListener("click", () => prepareStudyEditor("materials"));
 elements.scenarioNav.addEventListener("click", () => switchTab("scenario"));
+agentButtonController = ThermoFlowFloatingButton.attach(elements.modelingNav, {
+  onActivate: () => setModelingSidebarOpen(true, { focus: true }),
+});
+elements.closeModelingSidebar.addEventListener("click", () => setModelingSidebarOpen(false, { focus: true }));
+elements.modelingBackdrop.addEventListener("click", () => setModelingSidebarOpen(false, { focus: true }));
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && state.modelingSidebarOpen && window.innerWidth < 1200
+      && !document.querySelector("dialog[open]")) setModelingSidebarOpen(false, { focus: true });
+});
 elements.meshNav.addEventListener("click", () => switchTab("mesh"));
 elements.solveNav.addEventListener("click", () => switchTab("solve"));
-elements.resultNav.addEventListener("click", () => switchTab("result"));
+elements.resultNav.addEventListener("click", () => { renderResultState(); switchTab("result"); });
+elements.retryResultButton.addEventListener("click", async () => { await loadSelectedResult(); render(); });
+elements.previousResultButton.addEventListener("click", () => {
+  const previous = previousCompletedStudy();
+  if (previous) selectStudy(previous.study_id, { activeTab: "result", visualizationMode: "thermal" });
+});
 elements.evaluationNav.addEventListener("click", () => switchTab("evaluation"));
 elements.agentNav.addEventListener("click", () => switchTab("agent"));
 elements.planTab.addEventListener("click", () => switchTab("solve"));
 elements.resultTab.addEventListener("click", () => switchTab("result"));
 elements.agentTab.addEventListener("click", () => switchTab("agent"));
 elements.modelingForm.addEventListener("submit", sendModelingMessage);
+elements.modelingExamples.addEventListener("click", event => {
+  const example = event.target.closest("[data-modeling-example]");
+  if (!example || example.disabled) return;
+  elements.modelingInput.value = example.dataset.modelingExample;
+  elements.modelingInput.focus();
+});
+elements.refreshModelingProvider.addEventListener("click", async () => {
+  elements.refreshModelingProvider.disabled = true;
+  try { state.health = await request("/health"); renderModeling(); }
+  catch (error) { showToast(`状态检查失败：${error.message}`, true); }
+  finally { elements.refreshModelingProvider.disabled = false; }
+});
 elements.applyModeling.addEventListener("click", () => decideModeling("apply"));
 elements.dismissModeling.addEventListener("click", () => decideModeling("dismiss"));
 elements.undoModeling.addEventListener("click", () => decideModeling("undo"));
 elements.reloadDraft.addEventListener("click", reloadModelingDraft);
-[elements.structuredInputs, elements.componentMaterialList, elements.studyPurpose, elements.draftMeshSize].forEach(node => {
+elements.retryDraftSave.addEventListener("click", retryDraftSave);
+elements.reloadDraftRecovery.addEventListener("click", reloadModelingDraft);
+[elements.structuredInputs, elements.componentMaterialList, elements.studyPurpose, elements.draftMeshSize, elements.draftMeshMethod].forEach(node => {
   node.addEventListener("input", queueDraftSave);
   node.addEventListener("change", queueDraftSave);
 });
@@ -6076,6 +6813,14 @@ elements.unitForm.addEventListener("submit", confirmUnit);
 elements.lengthUnit.addEventListener("change", updateUnitDimensions);
 elements.studyDraftForm.addEventListener("submit", generateStudyDraft);
 elements.draftAnalysisType.addEventListener("change", syncTransientFields);
+elements.simulationTimeButton.addEventListener("click", openSimulationTimeSettings);
+elements.closeSimulationTime.addEventListener("click", () => elements.simulationTimeDialog.close());
+elements.cancelSimulationTime.addEventListener("click", () => elements.simulationTimeDialog.close());
+elements.simulationTimeForm.addEventListener("submit", applySimulationTime);
+elements.simulationDuration.addEventListener("input", () => {
+  syncDurationTimeStep(elements.simulationDuration, elements.simulationTimeStep);
+});
+elements.simulationTimeStep.addEventListener("input", () => elements.simulationTimeStep.setCustomValidity(""));
 elements.timePosition.addEventListener("input", () => {
   scheduleTimeStep(Number(elements.timePosition.value));
 });
@@ -6126,6 +6871,7 @@ elements.componentRenameForm.addEventListener("submit", renameSelectedComponent)
 elements.closeComponentDialogButton.addEventListener("click", closeComponentDialog);
 elements.cancelComponentRenameButton.addEventListener("click", closeComponentDialog);
 elements.copyStudyButton.addEventListener("click", copySelectedStudy);
+elements.repairThinMeshButton.addEventListener("click", () => copySelectedStudy("mesh", { solver_backend: "tetra_stl_v1" }));
 elements.compareStudiesButton.addEventListener("click", compareSelectedStudies);
 elements.exitComparisonButton.addEventListener("click", () => {
   clearComparison();
@@ -6163,6 +6909,8 @@ elements.slicePosition.addEventListener("input", () => {
   state.sliceFraction = Number(elements.slicePosition.value) / 100;
   drawWorkpiece();
 });
+elements.heatSourceNav.addEventListener("click", openSourceEditor);
+
 elements.sourceEditButton.addEventListener("click", () => {
   if (elements.sourceEditor.hidden) openSourceEditor();
   else closeSourceEditor();
@@ -6211,9 +6959,11 @@ elements.heatSourcePlacement.addEventListener("change", updateUploadSourceFields
 document.getElementById("standardView").addEventListener("change", event => engineeringViewport?.fit(event.target.value));
 document.getElementById("geometryOpacity").addEventListener("input", drawWorkpiece);
 async function focusMaximumResult() {
-  if (!state.result || !engineeringViewport) return;
+  if (!state.result || !engineeringViewport || state.comparison) return;
+  const studyId = selectedStudy()?.study_id;
   state.visualizationMode = "thermal";
   await drawWorkpiece();
+  if (selectedStudy()?.study_id !== studyId || state.comparison) return;
   const point = engineeringViewport?.surface?.maximum_position_mm;
   const bbox = canvasStudyContext().workpiece?.geometry?.summary?.bbox;
   if (!point || !bbox) return;
@@ -6225,7 +6975,7 @@ async function focusMaximumResult() {
   elements.sliceControls.hidden = false;
   syncVisualizationModeButtons();
   await drawWorkpiece();
-  engineeringViewport.focus(point);
+  if (selectedStudy()?.study_id === studyId && !state.comparison) engineeringViewport.focus(point);
 }
 document.getElementById("focusMaximum").addEventListener("click", focusMaximumResult);
 elements.resultHotspot.addEventListener("click", focusMaximumResult);
@@ -6235,14 +6985,15 @@ const showViewportStatus = (message, error = false) => {
   viewportStatus.hidden = !message;
   viewportStatus.classList.toggle("is-error", error);
 };
-import("/assets/viewport.mjs?v=20260909-flow7").then(({ EngineeringViewport }) => {
+import("/assets/viewport.mjs?v=20260911-hover1").then(({ EngineeringViewport }) => {
   engineeringViewport = new EngineeringViewport(elements.workpieceCanvas, {
     status: showViewportStatus,
     component: id => selectComponent(id, true),
+    componentHover: showComponentHover,
     region: selectGeometryRegion,
     face: surfaceFaceSelected,
     loaded: surface => {
-      document.getElementById("focusMaximum").disabled = !surface.maximum_position_mm;
+      syncMaximumResultControl();
       if (surface.maximum_position_mm && state.result) {
         elements.resultHotspot.textContent = `(${surface.maximum_position_mm.map(value => formatNumber(value)).join(", ")}) mm`;
       }
@@ -6280,14 +7031,17 @@ import("/assets/viewport.mjs?v=20260909-flow7").then(({ EngineeringViewport }) =
       }
       const draft = activeSourceDraft();
       if (!draft) return;
+      openSourceEditor();
       const target = handle === "end" ? draft.end : draft.center;
       ["x", "y", "z"].forEach((axis, index) => {
         if (handle === "center" && draft.shape === "line") draft.end[axis] += position[index] - target[axis];
         target[axis] = position[index];
       });
       state.sourcePreviewDirty = true;
+      if (selectedStudy()?.confirmation?.status !== "confirmed") {
+        elements.draftEnableHeatSource.checked = true;
+      }
       queueDraftSave();
-      openSourceEditor();
       syncSourceEditor();
       drawWorkpiece();
     },
@@ -6313,4 +7067,5 @@ import("/assets/viewport.mjs?v=20260909-flow7").then(({ EngineeringViewport }) =
   });
   drawWorkpiece();
 }).catch(() => showViewportStatus("无法启动 WebGL 三维画布，请检查浏览器图形加速支持", true));
+renderModelingSidebar();
 loadWorkspace();

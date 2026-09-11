@@ -89,6 +89,8 @@ def _openai_failure(exc: Exception) -> PlannerUnavailableError:
 class PlannerDecision:
     plan: SimulationPlan
     provenance: PlannerProvenance
+    reply: str | None = None
+    questions: tuple[str, ...] = ()
 
 
 class SimulationPlanner(Protocol):
@@ -353,6 +355,62 @@ def build_planner(settings: Settings) -> SimulationPlanner:
     return OpenAIPlanner(settings.openai_model)
 
 
+def _manual_template_current_assumptions(
+    assumptions: Sequence[str],
+    *,
+    analysis_type: str,
+    initial_temperature_k: float | None,
+    duration_s: float | None,
+    boundaries: Sequence[FixedTemperatureBoundary],
+    convection: ConvectionBoundary | None,
+    convection_enabled: bool,
+    heat_sources: Sequence[VolumetricHeatSource],
+    source_enabled: bool,
+) -> list[str]:
+    original_initial = "初始全工件为 20 ℃，不存在预设冷热端。"
+    original_environment = "环境对流的待确认初值为 20 ℃、10 W/(m²·K)；未添加内部热源。"
+    marker = "手动模板的温度、边界和热源以当前结构化输入为准。"
+    prefix = "手动模板当前输入："
+    is_original = original_initial in assumptions and original_environment in assumptions
+    is_updated = marker in assumptions and any(item.startswith(prefix) for item in assumptions)
+    if not (is_original or is_updated):
+        return list(assumptions)
+
+    current = []
+    if analysis_type == "transient_conduction":
+        current.append(
+            "初始温度待填写" if initial_temperature_k is None else
+            f"初始温度 {initial_temperature_k:.6g} K（{initial_temperature_k - 273.15:.6g} ℃）"
+        )
+        current.append("仿真时长待填写" if duration_s is None else f"仿真时长 {duration_s:.6g} s")
+    else:
+        current.append("稳态导热，不使用初始温度和仿真时长")
+    current.append(f"定温边界 {len(boundaries)} 个")
+    if convection_enabled and convection is not None:
+        current.append(
+            f"全局对流环境 {convection.ambient_temperature_k:.6g} K"
+            f"（{convection.ambient_temperature_k - 273.15:.6g} ℃），"
+            f"对流系数 {convection.heat_transfer_coefficient_w_m2_k:.6g} W/(m²·K)"
+        )
+    else:
+        current.append("全局对流未启用")
+    if source_enabled and heat_sources:
+        current.append(
+            f"已启用 {len(heat_sources)} 个局部热源，总功率 "
+            f"{sum(source.total_power_w for source in heat_sources):.6g} W"
+        )
+    elif heat_sources:
+        current.append(f"已配置 {len(heat_sources)} 个局部热源，当前未启用")
+    else:
+        current.append("未配置局部热源")
+    description = prefix + "；".join(current) + "。"
+    return [
+        marker if item == original_initial else description
+        if item == original_environment or is_updated and item.startswith(prefix) else item
+        for item in assumptions
+    ]
+
+
 def apply_user_overrides(
     plan: SimulationPlan,
     overrides: SimulationOverrides | None,
@@ -439,6 +497,7 @@ def apply_user_overrides(
     solver_updates = {
         key: value
         for key, value in {
+            "backend": overrides.solver_backend,
             "relative_tolerance": overrides.relative_tolerance,
             "max_iterations": overrides.max_iterations,
         }.items()
@@ -655,13 +714,16 @@ def apply_user_overrides(
             "surface_conditions": surface_conditions,
             "heat_source_enabled": source_enabled,
             "global_convection_enabled": convection_enabled,
-            "assumptions": [
+            "assumptions": _manual_template_current_assumptions([
                 "按全局与区域设置施加对流、热流和辐射；其余表面绝热。"
                 if item == "未定温外表面按均匀环境对流散热处理。" and (surface_conditions or not convection_enabled)
                 else "未启用局部体积功率热源。"
                 if item.startswith("热源请求位置按嵌入深度") and not source_enabled else item
                 for item in plan.assumptions
-            ],
+            ], analysis_type=analysis_type, initial_temperature_k=initial_temperature_k,
+                duration_s=duration_s, boundaries=boundaries, convection=convection,
+                convection_enabled=convection_enabled, heat_sources=heat_sources,
+                source_enabled=source_enabled),
             "unsupported_physics": [item for item in plan.unsupported_physics
                 if not (item.startswith("辐射模型待确认：") and any(c.kind == "radiation" for c in
                     (overrides.surface_conditions if overrides.surface_conditions is not None else plan.surface_conditions)))],

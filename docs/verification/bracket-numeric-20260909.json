@@ -1,0 +1,228 @@
+[
+  {
+    "study_id": "study-09a54f6bdcea45e9b7fbde02a08953c8",
+    "workpiece_id": "wp-17fcbaea24084133826582bd6d66d97e",
+    "name": "complex_mounting_bracket",
+    "stl_sha256": "76a74d896f610c452ebb9347112b50ec8508fc5a9c084e9cc34cf3a8c320a1d6",
+    "material": "铝合金 6061-T6",
+    "initial_c": 20,
+    "duration_s": 60,
+    "compute_backend": "cuda-cupy-cg",
+    "cell_count": 64440,
+    "mesh_pitch_mm": 1.1,
+    "mesh_volume_deviation_percent": 15.876291566845909,
+    "maximum_energy_balance_error": 1.6552815012348476e-12,
+    "heat_source_mappings": [
+      {
+        "achieved_embedding_depth_mm": 2.2,
+        "depth_satisfied": true,
+        "mapped_cell_count": 72,
+        "name": "底板内嵌热源 12 W",
+        "placement": "embedded",
+        "placement_label": "嵌入模式",
+        "requested_center_mm": [
+          40.0,
+          25.0,
+          3.0
+        ],
+        "requested_embedding_depth_mm": 1.5,
+        "resolved_center_mm": [
+          39.6,
+          25.3,
+          3.3000000000000003
+        ],
+        "shape": "point",
+        "source_id": "source-1",
+        "source_index": 0,
+        "total_power_w": 12.0
+      }
+    ],
+    "probe_positions_mm": [
+      [
+        39.6,
+        25.3,
+        3.3000000000000003
+      ],
+      [
+        59.400000000000006,
+        41.800000000000004,
+        30.800000000000004
+      ],
+      [
+        80.30000000000001,
+        49.50000000000001,
+        59.400000000000006
+      ]
+    ],
+    "frames": [
+      {
+        "index": 0,
+        "time_s": 0.0,
+        "minimum_c": 20.0,
+        "maximum_c": 20.0,
+        "probe_temperatures_c": [
+          20.0,
+          20.0,
+          20.0
+        ]
+      },
+      {
+        "index": 21,
+        "time_s": 1.043715146457735,
+        "minimum_c": 19.99999993847706,
+        "maximum_c": 24.230775186064534,
+        "probe_temperatures_c": [
+          24.133032741064596,
+          20.000211533398613,
+          20.000011566988405
+        ]
+      },
+      {
+        "index": 74,
+        "time_s": 10.044413348002546,
+        "minimum_c": 20.074508189761843,
+        "maximum_c": 25.587632944752556,
+        "probe_temperatures_c": [
+          25.48987850465778,
+          20.251935848028836,
+          20.074508189761843
+        ]
+      },
+      {
+        "index": 136,
+        "time_s": 29.995710304488497,
+        "minimum_c": 20.977158150080697,
+        "maximum_c": 27.13767280557704,
+        "probe_temperatures_c": [
+          27.039863349289476,
+          21.36153590062071,
+          20.977158150080697
+        ]
+      },
+      {
+        "index": 200,
+        "time_s": 60.0,
+        "minimum_c": 22.795859182260756,
+        "maximum_c": 29.06830485095884,
+        "probe_temperatures_c": [
+          28.970551654938788,
+          23.219979922861853,
+          22.795859182260756
+        ]
+      }
+    ]
+  },
+  {
+    "study_id": "study-ef3b834142614b07b17f571a22f0fc42",
+    "workpiece_id": "wp-27a2bc7e74cf49239ee0419e9351d115",
+    "name": "sketch_support_bracket",
+    "stl_sha256": "1e7cf26fe56f10fe5767cfd4e7e318e134890a9acaf3901f150c9103265e500e",
+    "material": "铝合金 6061-T6",
+    "initial_c": 20,
+    "duration_s": 60,
+    "compute_backend": "cuda-cupy-cg",
+    "cell_count": 27926,
+    "mesh_pitch_mm": 0.95,
+    "mesh_volume_deviation_percent": 17.731146356797247,
+    "maximum_energy_balance_error": 8.410696926442838e-12,
+    "heat_source_mappings": [
+      {
+        "achieved_embedding_depth_mm": 3.8,
+        "depth_satisfied": true,
+        "mapped_cell_count": 75,
+        "name": "支架上端内嵌体热源 12 W",
+        "placement": "embedded",
+        "placement_label": "嵌入模式",
+        "requested_center_mm": [
+          45.0,
+          3.0,
+          82.0
+        ],
+        "requested_embedding_depth_mm": 1.0,
+        "resolved_center_mm": [
+          44.65,
+          2.8499999999999996,
+          81.7
+        ],
+        "shape": "volume",
+        "source_id": "source-1",
+        "source_index": 0,
+        "total_power_w": 12.0
+      }
+    ],
+    "probe_positions_mm": [
+      [
+        44.65,
+        2.8499999999999996,
+        81.7
+      ],
+      [
+        22.799999999999997,
+        0.95,
+        40.85
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "frames": [
+      {
+        "index": 0,
+        "time_s": 0.0,
+        "minimum_c": 20.0,
+        "maximum_c": 20.0,
+        "probe_temperatures_c": [
+          20.0,
+          20.0,
+          20.0
+        ]
+      },
+      {
+        "index": 22,
+        "time_s": 1.0042731113706351,
+        "minimum_c": 19.999995252719145,
+        "maximum_c": 26.131890082986388,
+        "probe_temperatures_c": [
+          26.131890082986388,
+          20.000333446322713,
+          20.000000253166604
+        ]
+      },
+      {
+        "index": 76,
+        "time_s": 9.988268955894835,
+        "minimum_c": 20.112324591848903,
+        "maximum_c": 36.82746193319531,
+        "probe_temperatures_c": [
+          36.82746193319531,
+          21.25015597221727,
+          20.127224263809296
+        ]
+      },
+      {
+        "index": 138,
+        "time_s": 30.16745025430138,
+        "minimum_c": 22.916736995645294,
+        "maximum_c": 45.0731450933182,
+        "probe_temperatures_c": [
+          45.0731450933182,
+          26.009339068485133,
+          22.96828567255784
+        ]
+      },
+      {
+        "index": 200,
+        "time_s": 60.0,
+        "minimum_c": 29.170029810257404,
+        "maximum_c": 52.19440158464539,
+        "probe_temperatures_c": [
+          52.19440158464539,
+          32.62691868706861,
+          29.232212237146086
+        ]
+      }
+    ]
+  }
+]
